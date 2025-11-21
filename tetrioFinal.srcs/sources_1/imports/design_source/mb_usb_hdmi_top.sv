@@ -134,8 +134,8 @@ module mb_usb_hdmi_top(
 
     waterfall_example waterfall_example(
         .vga_clk(clk_25MHz),
-        .DrawX(DrawX),
-        .DrawY(DrawY),
+        .DrawX(drawX),
+        .DrawY(drawY),
         .blank(vde),
         .red(red),
         .green(green),
