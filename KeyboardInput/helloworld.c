@@ -4,11 +4,11 @@
 #include "xuartlite.h"
 #include "xgpio.h"
 
-#define UART_DEVICE_ID XPAR_UARTLITE_0_DEVICE_ID //make sure to change baud rate to match in device manager
-#define PLAYER_GPIO_ID XPAR_AXI_GPIO_0_DEVICE_ID //not needed
-#define STATE_GPIO_ID XPAR_AXI_GPIO_1_DEVICE_ID //not needed
-#define PLAYER_1_CODE_GPIO_ID XPAR_PLAYER1KEYCODE_DEVICE_ID //change to gpio on board
-#define PLAYER_2_CODE_GPIO_ID XPAR_PLAYER2KEYCODE_DEVICE_ID  //change to gpio on board
+#define UART_DEVICE_ID XPAR_UARTLITE_0_DEVICE_ID
+#define PLAYER_GPIO_ID XPAR_AXI_GPIO_0_DEVICE_ID
+#define STATE_GPIO_ID XPAR_AXI_GPIO_1_DEVICE_ID
+#define PLAYER_1_CODE_GPIO_ID XPAR_PLAYER1KEYCODE_DEVICE_ID
+#define PLAYER_2_CODE_GPIO_ID XPAR_PLAYER2KEYCODE_DEVICE_ID
 
 XUartLite Uart;
 XGpio PlayerGpio;
@@ -16,69 +16,83 @@ XGpio StateGpio;
 XGpio P1KeycodeGpio;
 XGpio P2KeycodeGpio;
 
-static void recv_byte(u8 *dst) { //idk if we can use this for our case tbh because we dont have time to sit around and wait, maybe we can add a timeout?
-    while (XUartLite_Recv(&Uart, dst, 1) == 0) {
-        // wait for data
+// -------------------------------------------
+// Non-blocking UART read attempt
+// returns 1 if a byte was read, 0 otherwise
+// -------------------------------------------
+int try_recv_byte(u8 *dst) {
+    return XUartLite_Recv(&Uart, dst, 1);
+}
+
+// -------------------------------------------
+// Process one input packet (player, key, state)
+// -------------------------------------------
+void process_input_event(u8 player, u8 key, u8 state) {
+    static u8 last_key = 0;
+    static u8 last_state = 0;
+    static int have_last = 0;
+
+    // ignore duplicate repeat events
+    if (have_last && key == last_key && state == last_state)
+        return;
+
+    last_key = key;
+    last_state = state;
+    have_last = 1;
+
+    // Write GPIO outputs
+    XGpio_DiscreteWrite(&PlayerGpio, 1, player & 0x01);
+    XGpio_DiscreteWrite(&StateGpio, 1, state & 0x01);
+
+    if (player == 1) {
+        XGpio_DiscreteWrite(&P1KeycodeGpio, 1, key);
+    } else if (player == 2) {
+        XGpio_DiscreteWrite(&P2KeycodeGpio, 1, key);
     }
 }
+
+// -----------------------------------------------------
 
 int main() {
     init_platform();
 
-    u8 player, key, state;
-    u8 last_key = 0;
-    u8 last_state = 0;
-    int have_last = 0;
-
     XUartLite_Initialize(&Uart, UART_DEVICE_ID);
 
     XGpio_Initialize(&PlayerGpio, PLAYER_GPIO_ID);
-    XGpio_SetDataDirection(&PlayerGpio, 1, 0x0);
+    XGpio_SetDataDirection(&PlayerGpio, 1, 0);
 
     XGpio_Initialize(&StateGpio, STATE_GPIO_ID);
-    XGpio_SetDataDirection(&StateGpio, 1, 0x0);
+    XGpio_SetDataDirection(&StateGpio, 1, 0);
 
     XGpio_Initialize(&P1KeycodeGpio, PLAYER_1_CODE_GPIO_ID);
-    XGpio_SetDataDirection(&P1KeycodeGpio, 1, 0x0000);
+    XGpio_SetDataDirection(&P1KeycodeGpio, 1, 0);
 
     XGpio_Initialize(&P2KeycodeGpio, PLAYER_2_CODE_GPIO_ID);
-    XGpio_SetDataDirection(&P2KeycodeGpio, 1, 0x0000);
+    XGpio_SetDataDirection(&P2KeycodeGpio, 1, 0);
 
+    // UART packet assembly state
+    u8 packet[3];
+    int bytes_needed = 3;
 
     while (1) {
 
-        // Block until all 3 bytes arrive
-        recv_byte(&player);
-        recv_byte(&key);
-        recv_byte(&state);
+        // ---- NON-BLOCKING UART RECEIVE ----
+        u8 b;
+        if (try_recv_byte(&b)) {
+            packet[3 - bytes_needed] = b;
+            bytes_needed--;
 
-        // De-duplicate repeated events
-        if (have_last && key == last_key && state == last_state) {
-            continue;
+            if (bytes_needed == 0) {
+                // full packet received
+                process_input_event(packet[0], packet[1], packet[2]);
+                bytes_needed = 3;
+            }
         }
 
-        last_key = key;
-        last_state = state;
-        have_last = 1;
-
-
-        XGpio_DiscreteWrite(&PlayerGpio, 1, player & 0x01);
-
-        XGpio_DiscreteWrite(&StateGpio, 1, state & 0x01);
-
-        if(player == 1){
-        	XGpio_DiscreteWrite(&P1KeycodeGpio, 1, key);
-        } else if (player == 2){
-        	XGpio_DiscreteWrite(&P2KeycodeGpio, 1, key);
-        }
-
-
-
-        u8 packet[3] = { player, key, state };
-
-        // Wait until previous send is done
-        while (XUartLite_IsSending(&Uart)); //don't need to send data back except for debugging
-        XUartLite_Send(&Uart, packet, 3);
+        // ---- GAME LOGIC ALWAYS RUNNING ----
+        // update physics, animations, timers, etc
+        // update_game_logic();
+        // render_frame();
     }
 
     cleanup_platform();
