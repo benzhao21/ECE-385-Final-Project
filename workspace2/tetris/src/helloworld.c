@@ -50,6 +50,7 @@
 #include "xparameters.h"
 #include "xuartlite.h"
 #include "xgpio.h"
+#include <xtmrctr.h>
 #include <stdbool.h>
 
 #define UART_DEVICE_ID XPAR_UARTLITE_0_DEVICE_ID
@@ -58,7 +59,6 @@
 
 #define BOARD_P1 ((volatile uint32_t*)0x44A10000)
 #define BOARD_P2 ((volatile uint32_t*)0x44A10064)
-#define TIMER ((volatile uint32_t*) 0x41C00000)
 
 #include <stdint.h>
 
@@ -69,6 +69,10 @@
 #define COLOR_Z 7
 #define COLOR_J 2
 #define COLOR_L 3
+
+#define KEY_LEFT   25
+#define KEY_RIGHT  27
+#define KEY_ENTER  0xD
 
 
 #define BOARD_WIDTH 10
@@ -138,6 +142,8 @@ typedef struct{
 XUartLite Uart;
 XGpio P1KeycodeGpio;
 XGpio P2KeycodeGpio;
+XTmrCtr Usb_timer;
+
 
 // -------------------------------------------
 // Non-blocking UART read attempt
@@ -170,9 +176,6 @@ void process_input_event(u8 player, u8 key, u8 state) {
     }
 }
 
-uint32_t readtimer() {
-	return (*TIMER);
-}
 void writeboard(Player* p) {
     uint32_t temp;
     uint8_t idx;
@@ -203,7 +206,7 @@ void writeboard(Player* p) {
     }
 }
 
-
+// returns true if collision, false if no collision
 bool check_collision(Player *p, uint8_t x, uint8_t y) {
     uint8_t (*shape)[4] = TETROMINOES[p->piece]; // current piece, 0° orientation
 
@@ -243,6 +246,31 @@ void lock_piece(Player* p, uint8_t x) {
         }
     }
 }
+
+
+// Simple LCG generator, 32-bit state
+static uint32_t rng_state = 1; // seed
+
+uint8_t simple_rand7() {
+    rng_state = rng_state * 1664525 + 1013904223; // LCG
+    return (rng_state >> 16) % 7; // return 0..6
+}
+
+//returns true if game over
+bool spawn_new_piece(Player* p) {
+    p->piece = simple_rand7();      // random tetromino
+    p->y = 0;                       // top of board
+    p->x = (BOARD_WIDTH / 2) - 2;   // center horizontally
+
+    // Optional: check for collision/game over
+    if (check_collision(p, p->x, p->y)) {
+        // handle game over
+    	return true;
+    }
+    return false;
+}
+
+
 // Returns true if piece was locked (hit the bottom or another piece)
 bool apply_gravity(Player* p, uint8_t x) {
     if(!check_collision(p, x, p->y + 1)) {
@@ -252,12 +280,17 @@ bool apply_gravity(Player* p, uint8_t x) {
     } else {
         // Collision detected lock piece
         lock_piece(p, x);
-        return true;  // piece locked
+        bool gameover = spawn_new_piece(p);
+        return gameover;
     }
 }
-
 int main() {
     init_platform();
+
+	XTmrCtr_Initialize(&Usb_timer, XPAR_TIMER_USB_AXI_DEVICE_ID);
+	XTmrCtr_SetOptions(&Usb_timer, 0, 0x00000004UL);
+	XTmrCtr_Start(&Usb_timer, 0);
+
 
     XUartLite_Initialize(&Uart, UART_DEVICE_ID);
 
@@ -276,14 +309,13 @@ int main() {
 
     P1.addr = BOARD_P1;
     P2.addr = BOARD_P2;
-    P1.piece = 6;
+    P1.piece = simple_rand7();
     P1.y = 0;
-    P1.x = 0;
-    P2.piece = 6;
+    P1.x = 3;
+    P2.piece = simple_rand7();
     P2.y = 0;
-    P2.x = 0;
+    P2.x = 3;
     // init boards
-    uint32_t time = *TIMER;
 
     memset(P1.grid, 0, sizeof(P1.grid));
     memset(P2.grid, 0, sizeof(P2.grid));
@@ -291,7 +323,44 @@ int main() {
     writeboard(&P2);
 
     uint32_t gravity_ticks = 50000000; // 10 ms at 100 MHz
-    uint32_t last_tick = readtimer();
+    uint32_t tick1;
+    uint32_t tick2;
+    int p1_ready = 0;
+    int p2_ready = 0;
+
+    while(1) {
+    	u8 b;
+		if (try_recv_byte(&b)) {
+			packet[3 - bytes_needed] = b;
+			bytes_needed--;
+
+			if (bytes_needed == 0) {
+				// full packet received
+				process_input_event(packet[0], packet[1], packet[2]);
+				bytes_needed = 3;
+			}
+		}
+	 if (packet[2] == 1 && packet[1] == KEY_ENTER) {
+			 if (packet[0] == 1) {
+				 p1_ready = 1;
+				 tick1 = XTmrCtr_GetValue(&Usb_timer, 0);
+			 }
+			 if (packet[0] == 2) {
+				 p2_ready = 1;
+				 tick2 = XTmrCtr_GetValue(&Usb_timer, 0);
+			 }
+		 }
+	 if (p1_ready && p2_ready) {
+		 rng_state = tick1 + tick2;
+		 break;
+	 }
+
+    }
+    uint32_t last_tick = XTmrCtr_GetValue(&Usb_timer, 0);
+
+    bool gameover1;
+    bool gameover2;
+    bool gameover;
     while (1) {
 
         // ---- NON-BLOCKING UART RECEIVE ----
@@ -307,16 +376,22 @@ int main() {
             }
         }
 
-        uint32_t now = readtimer();
-          if((now - last_tick) >= gravity_ticks) {
-              apply_gravity(&P1, P1.x); // move piece down
+        uint32_t now = XTmrCtr_GetValue(&Usb_timer, 0);
+        if ((uint32_t)(now - last_tick) >= gravity_ticks) {
+              gameover1 = apply_gravity(&P1, P1.x); // move piece down
+              gameover2 = apply_gravity(&P2, P2.x); // move piece down
+
               last_tick += gravity_ticks; // keep in sync
           }
         // ---- GAME LOGIC ALWAYS RUNNING ----
         writeboard(&P1);
         writeboard(&P2);
-
+        gameover = gameover1 || gameover2;
+        if(gameover) {
+        	break;
+        }
     }
+
 
     cleanup_platform();
     return 0;
