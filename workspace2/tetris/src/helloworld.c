@@ -288,6 +288,7 @@ int main() {
     u8 packet[3];
     int bytes_needed = 3;
     u8 key1, key2;
+    u8 p1Down, p2Down;
     Player P1, P2;
 
 
@@ -362,15 +363,20 @@ int main() {
         }
         if(packet[0] == 1) {
         	key1 = packet[1];
+        	p1Down = packet[2];
+        	p2Down = 0;
+
         }
         if(packet[0] == 2 ) {
         	key2 = packet[1];
+        	p1Down = 0;
+        	p2Down = packet[2];
         }
 
         uint32_t now = XTmrCtr_GetValue(&Usb_timer, 0);
         if ((uint32_t)(now - last_tick1) >= lr_ticks) {
-        	 handle_left_right(&P1,key1, packet[2]);
-        	 handle_left_right(&P2,key2, packet[2]);
+        	 handle_left_right(&P1,key1, p1Down);
+        	 handle_left_right(&P2,key2, p2Down);
         	 last_tick1 += lr_ticks;
         }
         if ((uint32_t)(now - last_tick2) >= gravity_ticks) {
