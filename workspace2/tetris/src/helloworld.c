@@ -41,71 +41,224 @@
 
 #define KEY_LEFT   0x25
 #define KEY_RIGHT  0x27
+#define KEY_ROTATE_CW 0x26
+#define KEY_ROTATE_CCW 0x5A
 #define KEY_ENTER  0xD
+#define KEY_SOFTDROP   0x28
+#define KEY_HARDDROP   0x20
+
 
 
 #define BOARD_WIDTH 10
 #define BOARD_HEIGHT 20
 
-// 7 Tetrominoes, single orientation each, 4x4 grid
-uint8_t TETROMINOES[7][4][4] = {
-    // I
+// TETROMINOES[piece][rot][row][col]
+uint8_t TETROMINOES[7][4][4][4] = {
+    // I piece
     {
-        {COLOR_I,COLOR_I,COLOR_I,COLOR_I},
-        {0,0,0,0},
-        {0,0,0,0},
-        {0,0,0,0}
+        {   // rot 0
+            {4,4,4,4},
+            {0,0,0,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {   // rot 1
+            {0,0,4,0},
+            {0,0,4,0},
+            {0,0,4,0},
+            {0,0,4,0}
+        },
+        {   // rot 2
+            {4,4,4,4},
+            {0,0,0,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {   // rot 3
+            {0,4,0,0},
+            {0,4,0,0},
+            {0,4,0,0},
+            {0,4,0,0}
+        }
     },
-    // O
+
+    // O piece
     {
-        {COLOR_O,COLOR_O,0,0},
-        {COLOR_O,COLOR_O,0,0},
-        {0,0,0,0},
-        {0,0,0,0}
+        {
+            {6,6,0,0},
+            {6,6,0,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {   // same for all rotations
+            {6,6,0,0},
+            {6,6,0,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {
+            {6,6,0,0},
+            {6,6,0,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {
+            {6,6,0,0},
+            {6,6,0,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        }
     },
-    // T
+
+    // T piece
     {
-        {0,COLOR_T,0,0},
-        {COLOR_T,COLOR_T,COLOR_T,0},
-        {0,0,0,0},
-        {0,0,0,0}
+        {   // rot 0
+            {0,5,0,0},
+            {5,5,5,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {   // rot 1
+            {0,5,0,0},
+            {0,5,5,0},
+            {0,5,0,0},
+            {0,0,0,0}
+        },
+        {   // rot 2
+            {0,0,0,0},
+            {5,5,5,0},
+            {0,5,0,0},
+            {0,0,0,0}
+        },
+        {   // rot 3
+            {0,5,0,0},
+            {5,5,0,0},
+            {0,5,0,0},
+            {0,0,0,0}
+        }
     },
-    // S
+
+    // S piece
     {
-        {0,COLOR_S,COLOR_S,0},
-        {COLOR_S,COLOR_S,0,0},
-        {0,0,0,0},
-        {0,0,0,0}
+        {
+            {0,1,1,0},
+            {1,1,0,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {
+            {1,0,0,0},
+            {1,1,0,0},
+            {0,1,0,0},
+            {0,0,0,0}
+        },
+        {
+            {0,1,1,0},
+            {1,1,0,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {
+            {1,0,0,0},
+            {1,1,0,0},
+            {0,1,0,0},
+            {0,0,0,0}
+        }
     },
-    // Z
+
+    // Z piece
     {
-        {COLOR_Z,COLOR_Z,0,0},
-        {0,COLOR_Z,COLOR_Z,0},
-        {0,0,0,0},
-        {0,0,0,0}
+        {
+            {7,7,0,0},
+            {0,7,7,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {
+            {0,0,7,0},
+            {0,7,7,0},
+            {0,7,0,0},
+            {0,0,0,0}
+        },
+        {
+            {7,7,0,0},
+            {0,7,7,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {
+            {0,0,7,0},
+            {0,7,7,0},
+            {0,7,0,0},
+            {0,0,0,0}
+        }
     },
-    // J
+
+    // J piece
     {
-        {COLOR_J,0,0,0},
-        {COLOR_J,COLOR_J,COLOR_J,0},
-        {0,0,0,0},
-        {0,0,0,0}
+        {
+            {2,0,0,0},
+            {2,2,2,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {
+            {0,2,2,0},
+            {0,2,0,0},
+            {0,2,0,0},
+            {0,0,0,0}
+        },
+        {
+            {0,0,0,0},
+            {2,2,2,0},
+            {0,0,2,0},
+            {0,0,0,0}
+        },
+        {
+            {0,2,0,0},
+            {0,2,0,0},
+            {2,2,0,0},
+            {0,0,0,0}
+        }
     },
-    // L
+
+    // L piece
     {
-        {0,0,COLOR_L,0},
-        {COLOR_L,COLOR_L,COLOR_L,0},
-        {0,0,0,0},
-        {0,0,0,0}
+        {
+            {0,0,3,0},
+            {3,3,3,0},
+            {0,0,0,0},
+            {0,0,0,0}
+        },
+        {
+            {0,3,0,0},
+            {0,3,0,0},
+            {0,3,3,0},
+            {0,0,0,0}
+        },
+        {
+            {0,0,0,0},
+            {3,3,3,0},
+            {3,0,0,0},
+            {0,0,0,0}
+        },
+        {
+            {3,3,0,0},
+            {0,3,0,0},
+            {0,3,0,0},
+            {0,0,0,0}
+        }
     }
 };
+
 
 typedef struct{
 	uint8_t grid[10][20];
 	volatile uint32_t* addr;
 	uint8_t piece; // 0, 1, 2, ... same order as tetrominoes
-	uint8_t x; //0 is leftmost
-	uint8_t y; // 0 is top of board
+	int16_t x; // signed now
+	int16_t y; // signed now
+	uint8_t rot; // 0 ,1 ,2,3 clockwise rotations
 } Player;
 
 XUartLite Uart;
@@ -162,7 +315,7 @@ void writeboard(Player* p) {
             int rel_y = j - p->y;
 
             if(rel_x >= 0 && rel_x < 4 && rel_y >= 0 && rel_y < 4) {
-                piece_cell = TETROMINOES[p->piece][rel_y][rel_x];
+                piece_cell = TETROMINOES[p->piece][p->rot][rel_y][rel_x];
             }
 
             // Overlay piece on grid using OR
@@ -176,8 +329,8 @@ void writeboard(Player* p) {
 }
 
 // returns true if collision, false if no collision
-bool check_collision(Player *p, uint8_t x, uint8_t y) {
-    uint8_t (*shape)[4] = TETROMINOES[p->piece]; // current piece, 0° orientation
+bool check_collision(Player *p, int x, int y) {
+    uint8_t (*shape)[4] = TETROMINOES[p->piece][p->rot]; // current piece, 0° orientation
 
     for(int i = 0; i < 4; i++) {       // column in tetromino
         for(int j = 0; j < 4; j++) {   // row in tetromino
@@ -198,8 +351,8 @@ bool check_collision(Player *p, uint8_t x, uint8_t y) {
     return false; // no collision
 }
 
-void lock_piece(Player* p, uint8_t x) {
-    uint8_t (*shape)[4] = TETROMINOES[p->piece]; // current piece, no rotation
+void lock_piece(Player* p, int x) {
+    uint8_t (*shape)[4] = TETROMINOES[p->piece][p->rot]; // current piece, no rotation
 
     for(int i = 0; i < 4; i++) {       // column in tetromino
         for(int j = 0; j < 4; j++) {   // row in tetromino
@@ -230,7 +383,7 @@ bool spawn_new_piece(Player* p) {
     p->piece = simple_rand7();      // random tetromino
     p->y = 0;                       // top of board
     p->x = (BOARD_WIDTH / 2) - 2;   // center horizontally
-
+    p->rot = 0;
     // Optional: check for collision/game over
     if (check_collision(p, p->x, p->y)) {
         // handle game over
@@ -241,7 +394,7 @@ bool spawn_new_piece(Player* p) {
 
 
 // Returns true if piece was locked (hit the bottom or another piece)
-bool apply_gravity(Player* p, uint8_t x) {
+bool apply_gravity(Player* p, int x) {
     if(!check_collision(p, x, p->y + 1)) {
         // Move down
         p->y++;
@@ -267,6 +420,119 @@ void handle_left_right(Player* p, u8 key, u8 state) {
     }
 }
 
+// Returns number of cleared lines
+int clear_lines(Player *p) {
+    int lines_cleared = 0;
+    // Scan from bottom to top
+    for (int y = BOARD_HEIGHT - 1; y >= 0; y--) {
+        bool full = true;
+        // Check if row y is full
+        for (int x = 0; x < BOARD_WIDTH; x++) {
+            if (p->grid[x][y] == 0) {
+                full = false;
+                break;
+            }
+        }
+        if (full) {
+            // Shift everything above down by 1
+            for (int yy = y; yy > 0; yy--) {
+                for (int x = 0; x < BOARD_WIDTH; x++) {
+                    p->grid[x][yy] = p->grid[x][yy - 1];
+                }
+            }
+            // Top row becomes empty
+            for (int x = 0; x < BOARD_WIDTH; x++) {
+                p->grid[x][0] = 0;
+            }
+            lines_cleared++;
+            y++;  // re-check the same y index because rows shifted down
+        }
+    }
+
+    return lines_cleared;
+}
+
+void handle_rotate(Player *p, u8 key, u8 state) {
+    if (state != 1) return;   // rotate only on key-down
+
+    uint8_t old_rot = p->rot;
+
+    if (key == KEY_ROTATE_CW) {
+        // clockwise: +1 mod 4
+        p->rot = (p->rot + 1) & 3;
+    }
+    else if (key == KEY_ROTATE_CCW) {
+        // counterclockwise: -1 mod 4
+        p->rot = (p->rot + 3) & 3;   // same as (rot - 1 + 4) % 4
+    }
+    else {
+        return; // not a rotation key
+    }
+
+    // Check legality
+    if (check_collision(p, p->x, p->y)) {
+        p->rot = old_rot; // revert
+    }
+}
+
+void handle_softdrop(Player *p, u8 key, u8 state) {
+    if (state != 1) return; // only act on key-down
+
+    if (key != KEY_SOFTDROP) return;
+
+    // Try moving piece down by 1
+    if (!check_collision(p, p->x, p->y + 1)) {
+        p->y++;
+    }
+}
+//
+//
+//
+//void handle_harddrop(Player *p, u8 key, u8 state) {
+//    if (state != 1) return; // act only on key-down
+//    if (key != KEY_HARDDROP) return;
+//    while (!check_collision(p, p->x, p->y + 1)) {
+//            p->y++;
+//        }
+//        // Lock piece where it stopped
+//        lock_piece(p, p->x);
+//        // Clear completed lines
+//        clear_lines(p);
+//        // Spawn the next piece
+//        spawn_new_piece(p);
+//}
+
+// rising-edge harddrop
+void handle_harddrop_edge(Player *p, u8 key, u8 state, u8 prev_state) {
+    if (key != KEY_HARDDROP) return;
+    if (!(prev_state == 0 && state == 1)) return; // only on 0 -> 1
+
+    // move down until collision
+    while (!check_collision(p, p->x, p->y + 1)) {
+        p->y++;
+    }
+    lock_piece(p, p->x);
+    clear_lines(p);
+    spawn_new_piece(p);
+}
+
+// optional: rising-edge rotate (if you want single rotation per press)
+void handle_rotate_edge(Player *p, u8 key, u8 state, u8 prev_state) {
+    if (!(prev_state == 0 && state == 1)) return;
+    uint8_t old_rot = p->rot;
+    if (key == KEY_ROTATE_CW) {
+        p->rot = (p->rot + 1) & 3;
+    } else if (key == KEY_ROTATE_CCW) {
+        p->rot = (p->rot + 3) & 3;
+    } else {
+        return;
+    }
+    if (check_collision(p, p->x, p->y)) {
+        p->rot = old_rot;
+    }
+}
+
+
 
 int main() {
     init_platform();
@@ -289,28 +555,16 @@ int main() {
     int bytes_needed = 3;
     u8 key1, key2;
     u8 p1Down, p2Down;
+    u8 prev_p1Down = 0;
+    u8 prev_p2Down = 0;
     Player P1, P2;
 
-
-    P1.addr = BOARD_P1;
-    P2.addr = BOARD_P2;
-    P1.piece = simple_rand7();
-    P1.y = 0;
-    P1.x = 3;
-    P2.piece = simple_rand7();
-    P2.y = 0;
-    P2.x = 3;
-    // init boards
-
-    memset(P1.grid, 0, sizeof(P1.grid));
-    memset(P2.grid, 0, sizeof(P2.grid));
-    writeboard(&P1);
-    writeboard(&P2);
-
     uint32_t gravity_ticks = 50000000; // 500 ms at 100 MHz
-    uint32_t lr_ticks = 5000000; // 50 ms;
+    uint32_t lr_ticks = 10000000; // 50 ms;
     uint32_t tick1;
     uint32_t tick2;
+    uint8_t lines1;
+    uint8_t lines2;
     int p1_ready = 0;
     int p2_ready = 0;
 
@@ -340,8 +594,25 @@ int main() {
 		 rng_state = tick1 + tick2;
 		 break;
 	 }
-
     }
+
+    P1.addr = BOARD_P1;
+   P2.addr = BOARD_P2;
+   P1.piece = simple_rand7();
+   P1.y = 0;
+   P1.x = 3;
+   P1.rot = 0;
+   P2.piece = simple_rand7();
+   P2.y = 0;
+   P2.x = 3;
+   P2.rot = 0;
+
+   // init boards
+   memset(P1.grid, 0, sizeof(P1.grid));
+   memset(P2.grid, 0, sizeof(P2.grid));
+   writeboard(&P1);
+   writeboard(&P2);
+
     uint32_t last_tick1 = XTmrCtr_GetValue(&Usb_timer, 0);
     uint32_t last_tick2 = XTmrCtr_GetValue(&Usb_timer, 0);
     bool gameover1;
@@ -377,12 +648,19 @@ int main() {
         if ((uint32_t)(now - last_tick1) >= lr_ticks) {
         	 handle_left_right(&P1,key1, p1Down);
         	 handle_left_right(&P2,key2, p2Down);
+        	    handle_rotate_edge(&P1, key1, p1Down, prev_p1Down);
+        	    handle_rotate_edge(&P2, key2, p2Down, prev_p2Down);
+        	 handle_softdrop(&P1,key1,p1Down);
+			handle_softdrop(&P2,key2,p2Down);
+		    handle_harddrop_edge(&P1, key1, p1Down, prev_p1Down);
+		    handle_harddrop_edge(&P2, key2, p2Down, prev_p2Down);
         	 last_tick1 += lr_ticks;
         }
         if ((uint32_t)(now - last_tick2) >= gravity_ticks) {
               gameover1 = apply_gravity(&P1, P1.x); // move piece down
               gameover2 = apply_gravity(&P2, P2.x); // move piece down
-
+              lines1 = clear_lines(&P1);
+              lines2 = clear_lines(&P2);
               last_tick2 += gravity_ticks; // keep in sync
           }
 
