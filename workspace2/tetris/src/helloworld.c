@@ -38,6 +38,7 @@
 #define COLOR_Z 7
 #define COLOR_J 2
 #define COLOR_L 3
+#define COLOR_GARB 8
 
 #define KEY_LEFT   0x25
 #define KEY_RIGHT  0x27
@@ -47,6 +48,7 @@
 #define KEY_SOFTDROP   0x28
 #define KEY_HARDDROP   0x20
 
+#define MAX_PIECES 1000
 
 
 #define BOARD_WIDTH 10
@@ -259,7 +261,13 @@ typedef struct{
 	int16_t x; // signed now
 	int16_t y; // signed now
 	uint8_t rot; // 0 ,1 ,2,3 clockwise rotations
+	uint8_t lines;
+	uint16_t next_piece_index;
 } Player;
+
+uint8_t piece_queue[MAX_PIECES];
+
+// Initialize once at game start
 
 XUartLite Uart;
 XGpio P1KeycodeGpio;
@@ -373,14 +381,20 @@ void lock_piece(Player* p, int x) {
 // Simple LCG generator, 32-bit state
 static uint32_t rng_state = 1; // seed
 
-uint8_t simple_rand7() {
+uint8_t simple_rand(int k) {
     rng_state = rng_state * 1664525 + 1013904223; // LCG
-    return (rng_state >> 16) % 7; // return 0..6
+    return (rng_state >> 16) % k; // return 0..6
 }
 
+void init_piece_queue() {
+    for (int i = 0; i < MAX_PIECES; i++) {
+        piece_queue[i] = simple_rand(7);  // 0..6 for tetromino types
+    }
+}
 //returns true if game over
 bool spawn_new_piece(Player* p) {
-    p->piece = simple_rand7();      // random tetromino
+	p->piece = piece_queue[p->next_piece_index];  // take from shared queue
+	p->next_piece_index = (p->next_piece_index + 1) % MAX_PIECES;    // random tetromino
     p->y = 0;                       // top of board
     p->x = (BOARD_WIDTH / 2) - 2;   // center horizontally
     p->rot = 0;
@@ -421,8 +435,7 @@ void handle_left_right(Player* p, u8 key, u8 state) {
 }
 
 // Returns number of cleared lines
-int clear_lines(Player *p) {
-    int lines_cleared = 0;
+void clear_lines(Player *p) {
     // Scan from bottom to top
     for (int y = BOARD_HEIGHT - 1; y >= 0; y--) {
         bool full = true;
@@ -444,12 +457,12 @@ int clear_lines(Player *p) {
             for (int x = 0; x < BOARD_WIDTH; x++) {
                 p->grid[x][0] = 0;
             }
-            lines_cleared++;
+            p->lines++;
             y++;  // re-check the same y index because rows shifted down
         }
     }
 
-    return lines_cleared;
+    return;
 }
 
 void handle_rotate(Player *p, u8 key, u8 state) {
@@ -485,23 +498,6 @@ void handle_softdrop(Player *p, u8 key, u8 state) {
         p->y++;
     }
 }
-//
-//
-//
-//void handle_harddrop(Player *p, u8 key, u8 state) {
-//    if (state != 1) return; // act only on key-down
-//    if (key != KEY_HARDDROP) return;
-//    while (!check_collision(p, p->x, p->y + 1)) {
-//            p->y++;
-//        }
-//        // Lock piece where it stopped
-//        lock_piece(p, p->x);
-//        // Clear completed lines
-//        clear_lines(p);
-//        // Spawn the next piece
-//        spawn_new_piece(p);
-//}
-
 // rising-edge harddrop
 void handle_harddrop_edge(Player *p, u8 key, u8 state, u8 prev_state) {
     if (key != KEY_HARDDROP) return;
@@ -531,8 +527,36 @@ void handle_rotate_edge(Player *p, u8 key, u8 state, u8 prev_state) {
         p->rot = old_rot;
     }
 }
+void apply_garbage(Player *p, uint8_t amount) {
+    while (amount--) {
+        // shift board up
+        for (int y = 0; y < 19; y++) {
+            for (int x = 0; x < 10; x++) {
+                p->grid[x][y] = p->grid[x][y + 1];
+            }
+        }
 
+        // make bottom row garbage
+        int hole = simple_rand(10);   // get hole in [0,9]
+        for (int x = 0; x < 10; x++) {
+            p->grid[x][19] = (x == hole) ? 0 : COLOR_GARB;  // 8 = garbage color
+        }
 
+        // after garbage insertion, piece should move up if needed
+        if (check_collision(p, p->x, p->y)) {
+            p->y--;
+        }
+    }
+}
+
+uint8_t garbage_from_lines(uint8_t lines) {
+    switch (lines) {
+        case 2: return 1;
+        case 3: return 2;
+        case 4: return 4;
+        default: return 0;
+    }
+}
 
 int main() {
     init_platform();
@@ -553,18 +577,10 @@ int main() {
     // UART packet assembly state
     u8 packet[3];
     int bytes_needed = 3;
-    u8 key1, key2;
-    u8 p1Down, p2Down;
-    u8 prev_p1Down = 0;
-    u8 prev_p2Down = 0;
-    Player P1, P2;
-
     uint32_t gravity_ticks = 50000000; // 500 ms at 100 MHz
     uint32_t lr_ticks = 10000000; // 50 ms;
     uint32_t tick1;
     uint32_t tick2;
-    uint8_t lines1;
-    uint8_t lines2;
     int p1_ready = 0;
     int p2_ready = 0;
 
@@ -595,19 +611,45 @@ int main() {
 		 break;
 	 }
     }
+    init_piece_queue();
 
-    P1.addr = BOARD_P1;
-   P2.addr = BOARD_P2;
-   P1.piece = simple_rand7();
-   P1.y = 0;
-   P1.x = 3;
-   P1.rot = 0;
-   P2.piece = simple_rand7();
-   P2.y = 0;
-   P2.x = 3;
-   P2.rot = 0;
+    Player P1 = {
+        .addr = BOARD_P1,
+        .piece = piece_queue[0],
+        .y = 0,
+        .x = 3,
+        .rot = 0,
+        .lines = 0,
+        .next_piece_index = 1,
+    };
 
-   // init boards
+    Player P2 = {
+        .addr = BOARD_P2,
+        .piece = piece_queue[0],
+        .y = 0,
+        .x = 3,
+        .rot = 0,
+        .lines = 0,
+        .next_piece_index = 1,
+    };
+
+//    Player P1, P2;
+//    P1.addr = BOARD_P1;
+//   P2.addr = BOARD_P2;
+//   P1.piece = piece_queue[0];
+//   P1.y = 0;
+//   P1.x = 3;
+//   P1.rot = 0;
+//   P1.lines = 0;
+//   P1.next_piece_index = 1;
+//   P2.piece = piece_queue[0];
+//   P2.y = 0;
+//   P2.x = 3;
+//   P2.rot = 0;
+//   P2.lines = 0;
+//   P2.next_piece_index = 1;
+//
+//   // init boards
    memset(P1.grid, 0, sizeof(P1.grid));
    memset(P2.grid, 0, sizeof(P2.grid));
    writeboard(&P1);
@@ -615,12 +657,17 @@ int main() {
 
     uint32_t last_tick1 = XTmrCtr_GetValue(&Usb_timer, 0);
     uint32_t last_tick2 = XTmrCtr_GetValue(&Usb_timer, 0);
-    bool gameover1;
-    bool gameover2;
-    bool gameover;
+
+    // Maintain per-player key + state
+    u8 key1 = 0, key2 = 0;
+    u8 p1Down = 0, p2Down = 0;
+    u8 prev_p1Down = 0, prev_p2Down = 0;
+
     while (1) {
 
-        // ---- NON-BLOCKING UART RECEIVE ----
+        //-----------------------------
+        // NON-BLOCKING UART INPUT
+        //-----------------------------
         u8 b;
         if (try_recv_byte(&b)) {
             packet[3 - bytes_needed] = b;
@@ -629,48 +676,75 @@ int main() {
             if (bytes_needed == 0) {
                 // full packet received
                 process_input_event(packet[0], packet[1], packet[2]);
+
+                if (packet[0] == 1) {
+                    key1      = packet[1];
+                    p1Down    = packet[2];
+                }
+                else if (packet[0] == 2) {
+                    key2      = packet[1];
+                    p2Down    = packet[2];
+                }
+
                 bytes_needed = 3;
             }
         }
-        if(packet[0] == 1) {
-        	key1 = packet[1];
-        	p1Down = packet[2];
-        	p2Down = 0;
 
-        }
-        if(packet[0] == 2 ) {
-        	key2 = packet[1];
-        	p1Down = 0;
-        	p2Down = packet[2];
-        }
-
+        //-----------------------------
+        // LEFT/RIGHT, ROTATION, DROPS
+        //-----------------------------
         uint32_t now = XTmrCtr_GetValue(&Usb_timer, 0);
-        if ((uint32_t)(now - last_tick1) >= lr_ticks) {
-        	 handle_left_right(&P1,key1, p1Down);
-        	 handle_left_right(&P2,key2, p2Down);
-        	    handle_rotate_edge(&P1, key1, p1Down, prev_p1Down);
-        	    handle_rotate_edge(&P2, key2, p2Down, prev_p2Down);
-        	 handle_softdrop(&P1,key1,p1Down);
-			handle_softdrop(&P2,key2,p2Down);
-		    handle_harddrop_edge(&P1, key1, p1Down, prev_p1Down);
-		    handle_harddrop_edge(&P2, key2, p2Down, prev_p2Down);
-        	 last_tick1 += lr_ticks;
-        }
-        if ((uint32_t)(now - last_tick2) >= gravity_ticks) {
-              gameover1 = apply_gravity(&P1, P1.x); // move piece down
-              gameover2 = apply_gravity(&P2, P2.x); // move piece down
-              lines1 = clear_lines(&P1);
-              lines2 = clear_lines(&P2);
-              last_tick2 += gravity_ticks; // keep in sync
-          }
 
-        // ---- GAME LOGIC ALWAYS RUNNING ----
+        if ((uint32_t)(now - last_tick1) >= lr_ticks) {
+
+            // movement
+            handle_left_right(&P1, key1, p1Down);
+            handle_left_right(&P2, key2, p2Down);
+
+            // soft drop (held)
+            handle_softdrop(&P1, key1, p1Down);
+            handle_softdrop(&P2, key2, p2Down);
+
+            // rotate (edge only)
+            handle_rotate_edge(&P1, key1, p1Down, prev_p1Down);
+            handle_rotate_edge(&P2, key2, p2Down, prev_p2Down);
+
+            // hard drop (edge only)
+            handle_harddrop_edge(&P1, key1, p1Down, prev_p1Down);
+            handle_harddrop_edge(&P2, key2, p2Down, prev_p2Down);
+            prev_p1Down = p1Down;
+             prev_p2Down = p2Down;
+
+            last_tick1 += lr_ticks;
+        }
+
+        //-----------------------------
+        // GRAVITY TICK
+        //-----------------------------
+        if ((uint32_t)(now - last_tick2) >= gravity_ticks) {
+
+            bool g1 = apply_gravity(&P1, P1.x);
+            bool g2 = apply_gravity(&P2, P2.x);
+
+            clear_lines(&P1);
+            clear_lines(&P2);
+
+            uint8_t gsend1 = garbage_from_lines(P1.lines);
+            uint8_t gsend2 = garbage_from_lines(P2.lines);
+            if (gsend1 > 0) apply_garbage(&P2, gsend1);
+            if (gsend2 > 0) apply_garbage(&P1, gsend2);
+            P1.lines = 0;
+            P2.lines = 0;
+            last_tick2 += gravity_ticks;
+
+            if (g1 || g2) break; // gameover
+        }
+
+        //-----------------------------
+        // RENDER
+        //-----------------------------
         writeboard(&P1);
         writeboard(&P2);
-        gameover = gameover1 || gameover2;
-        if(gameover) {
-        	break;
-        }
     }
 
 
