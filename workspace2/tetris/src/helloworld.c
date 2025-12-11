@@ -1,34 +1,3 @@
-/******************************************************************************
-*
-* Copyright (C) 2009 - 2014 Xilinx, Inc.  All rights reserved.
-*
-* Permission is hereby granted, free of charge, to any person obtaining a copy
-* of this software and associated documentation files (the "Software"), to deal
-* in the Software without restriction, including without limitation the rights
-* to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-* copies of the Software, and to permit persons to whom the Software is
-* furnished to do so, subject to the following conditions:
-*
-* The above copyright notice and this permission notice shall be included in
-* all copies or substantial portions of the Software.
-*
-* Use of the Software is limited solely to applications:
-* (a) running on a Xilinx device, or
-* (b) that interact with a Xilinx device through a bus or interconnect.
-*
-* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-* IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-* FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
-* XILINX  BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
-* WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF
-* OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-* SOFTWARE.
-*
-* Except as contained in this notice, the name of the Xilinx shall not be used
-* in advertising or otherwise to promote the sale, use or other dealings in
-* this Software without prior written authorization from Xilinx.
-*
-******************************************************************************/
 
 /*
  * helloworld.c: simple test application
@@ -70,8 +39,8 @@
 #define COLOR_J 2
 #define COLOR_L 3
 
-#define KEY_LEFT   25
-#define KEY_RIGHT  27
+#define KEY_LEFT   0x25
+#define KEY_RIGHT  0x27
 #define KEY_ENTER  0xD
 
 
@@ -284,6 +253,21 @@ bool apply_gravity(Player* p, uint8_t x) {
         return gameover;
     }
 }
+
+void handle_left_right(Player* p, u8 key, u8 state) {
+    if (state != 1) return; // move only on key-down
+
+    if (key == KEY_LEFT) {
+        if (!check_collision(p, p->x - 1, p->y))
+            p->x--;
+    }
+    else if (key == KEY_RIGHT) {
+        if (!check_collision(p, p->x + 1, p->y))
+            p->x++;
+    }
+}
+
+
 int main() {
     init_platform();
 
@@ -303,7 +287,7 @@ int main() {
     // UART packet assembly state
     u8 packet[3];
     int bytes_needed = 3;
-
+    u8 key1, key2;
     Player P1, P2;
 
 
@@ -322,7 +306,8 @@ int main() {
     writeboard(&P1);
     writeboard(&P2);
 
-    uint32_t gravity_ticks = 50000000; // 10 ms at 100 MHz
+    uint32_t gravity_ticks = 50000000; // 500 ms at 100 MHz
+    uint32_t lr_ticks = 5000000; // 50 ms;
     uint32_t tick1;
     uint32_t tick2;
     int p1_ready = 0;
@@ -356,8 +341,8 @@ int main() {
 	 }
 
     }
-    uint32_t last_tick = XTmrCtr_GetValue(&Usb_timer, 0);
-
+    uint32_t last_tick1 = XTmrCtr_GetValue(&Usb_timer, 0);
+    uint32_t last_tick2 = XTmrCtr_GetValue(&Usb_timer, 0);
     bool gameover1;
     bool gameover2;
     bool gameover;
@@ -375,14 +360,26 @@ int main() {
                 bytes_needed = 3;
             }
         }
+        if(packet[0] == 1) {
+        	key1 = packet[1];
+        }
+        if(packet[0] == 2 ) {
+        	key2 = packet[1];
+        }
 
         uint32_t now = XTmrCtr_GetValue(&Usb_timer, 0);
-        if ((uint32_t)(now - last_tick) >= gravity_ticks) {
+        if ((uint32_t)(now - last_tick1) >= lr_ticks) {
+        	 handle_left_right(&P1,key1, packet[2]);
+        	 handle_left_right(&P2,key2, packet[2]);
+        	 last_tick1 += lr_ticks;
+        }
+        if ((uint32_t)(now - last_tick2) >= gravity_ticks) {
               gameover1 = apply_gravity(&P1, P1.x); // move piece down
               gameover2 = apply_gravity(&P2, P2.x); // move piece down
 
-              last_tick += gravity_ticks; // keep in sync
+              last_tick2 += gravity_ticks; // keep in sync
           }
+
         // ---- GAME LOGIC ALWAYS RUNNING ----
         writeboard(&P1);
         writeboard(&P2);
