@@ -56,6 +56,85 @@
 #define PLAYER_1_CODE_GPIO_ID XPAR_PLAYER1KEYCODE_DEVICE_ID
 #define PLAYER_2_CODE_GPIO_ID XPAR_PLAYER2KEYCODE_DEVICE_ID
 
+#define BOARD_P1 ((volatile uint32_t*)0x44A10000)
+#define BOARD_P2 ((volatile uint32_t*)0x44A10064)
+#define TIMER ((volatile uint32_t*) 0x41C00000)
+
+#include <stdint.h>
+
+#define COLOR_I 4
+#define COLOR_O 6
+#define COLOR_T 5
+#define COLOR_S 1
+#define COLOR_Z 7
+#define COLOR_J 2
+#define COLOR_L 3
+
+
+#define BOARD_WIDTH 10
+#define BOARD_HEIGHT 20
+
+// 7 Tetrominoes, single orientation each, 4x4 grid
+uint8_t TETROMINOES[7][4][4] = {
+    // I
+    {
+        {COLOR_I,COLOR_I,COLOR_I,COLOR_I},
+        {0,0,0,0},
+        {0,0,0,0},
+        {0,0,0,0}
+    },
+    // O
+    {
+        {COLOR_O,COLOR_O,0,0},
+        {COLOR_O,COLOR_O,0,0},
+        {0,0,0,0},
+        {0,0,0,0}
+    },
+    // T
+    {
+        {0,COLOR_T,0,0},
+        {COLOR_T,COLOR_T,COLOR_T,0},
+        {0,0,0,0},
+        {0,0,0,0}
+    },
+    // S
+    {
+        {0,COLOR_S,COLOR_S,0},
+        {COLOR_S,COLOR_S,0,0},
+        {0,0,0,0},
+        {0,0,0,0}
+    },
+    // Z
+    {
+        {COLOR_Z,COLOR_Z,0,0},
+        {0,COLOR_Z,COLOR_Z,0},
+        {0,0,0,0},
+        {0,0,0,0}
+    },
+    // J
+    {
+        {COLOR_J,0,0,0},
+        {COLOR_J,COLOR_J,COLOR_J,0},
+        {0,0,0,0},
+        {0,0,0,0}
+    },
+    // L
+    {
+        {0,0,COLOR_L,0},
+        {COLOR_L,COLOR_L,COLOR_L,0},
+        {0,0,0,0},
+        {0,0,0,0}
+    }
+};
+
+typedef struct{
+	uint8_t grid[10][20];
+	volatile uint32_t* addr;
+	uint8_t piece; // 0, 1, 2, ... same order as tetrominoes
+	uint8_t x; //0 is leftmost
+	uint8_t y; // 0 is top of board
+} Player;
+
 XUartLite Uart;
 XGpio P1KeycodeGpio;
 XGpio P2KeycodeGpio;
@@ -91,6 +170,92 @@ void process_input_event(u8 player, u8 key, u8 state) {
     }
 }
 
+uint32_t readtimer() {
+	return (*TIMER);
+}
+void writeboard(Player* p) {
+    uint32_t temp;
+    uint8_t idx;
+    uint8_t piece_cell;
+
+    for(int j = 0; j < 20; j++) {
+        for(int i = 0; i < 10; i++) {
+            idx = i + j * 10;
+
+            if(idx % 8 == 0) temp = 0;
+
+            // Check if the current piece occupies this cell
+            piece_cell = 0; // default
+            int rel_x = i - p->x; // relative to piece top-left
+            int rel_y = j - p->y;
+
+            if(rel_x >= 0 && rel_x < 4 && rel_y >= 0 && rel_y < 4) {
+                piece_cell = TETROMINOES[p->piece][rel_y][rel_x];
+            }
+
+            // Overlay piece on grid using OR
+            temp += (p->grid[i][j] | piece_cell) << (4 * (7 - (idx % 8)));
+
+            if(idx % 8 == 7) {
+                *(p->addr + idx / 8) = temp;
+            }
+        }
+    }
+}
+
+
+bool check_collision(Player *p, uint8_t x, uint8_t y) {
+    uint8_t (*shape)[4] = TETROMINOES[p->piece]; // current piece, 0° orientation
+
+    for(int i = 0; i < 4; i++) {       // column in tetromino
+        for(int j = 0; j < 4; j++) {   // row in tetromino
+            if(shape[j][i] == 0) continue; // empty cell, skip
+
+            int board_x = x + i;
+            int board_y = y + j;
+
+            // Check boundaries
+            if(board_x < 0 || board_x >= BOARD_WIDTH) return true;
+            if(board_y < 0 || board_y >= BOARD_HEIGHT) return true;
+
+            // Check collision with existing blocks
+            if(p->grid[board_x][board_y] != 0) return true;
+        }
+    }
+
+    return false; // no collision
+}
+
+void lock_piece(Player* p, uint8_t x) {
+    uint8_t (*shape)[4] = TETROMINOES[p->piece]; // current piece, no rotation
+
+    for(int i = 0; i < 4; i++) {       // column in tetromino
+        for(int j = 0; j < 4; j++) {   // row in tetromino
+            if(shape[j][i] == 0) continue;
+
+            int board_x = x + i;
+            int board_y = p->y + j;
+
+            // Make sure we are inside board
+            if(board_x >= 0 && board_x < 10 && board_y >= 0 && board_y < 20) {
+                p->grid[board_x][board_y] = shape[j][i];
+            }
+        }
+    }
+}
+// Returns true if piece was locked (hit the bottom or another piece)
+bool apply_gravity(Player* p, uint8_t x) {
+    if(!check_collision(p, x, p->y + 1)) {
+        // Move down
+        p->y++;
+        return false; // piece not locked yet
+    } else {
+        // Collision detected lock piece
+        lock_piece(p, x);
+        return true;  // piece locked
+    }
+}
+
 int main() {
     init_platform();
 
@@ -105,6 +270,28 @@ int main() {
     // UART packet assembly state
     u8 packet[3];
     int bytes_needed = 3;
+
+    Player P1, P2;
+
+
+    P1.addr = BOARD_P1;
+    P2.addr = BOARD_P2;
+    P1.piece = 6;
+    P1.y = 0;
+    P1.x = 0;
+    P2.piece = 6;
+    P2.y = 0;
+    P2.x = 0;
+    // init boards
+    uint32_t time = *TIMER;
+
+    memset(P1.grid, 0, sizeof(P1.grid));
+    memset(P2.grid, 0, sizeof(P2.grid));
+    writeboard(&P1);
+    writeboard(&P2);
+
+    uint32_t gravity_ticks = 50000000; // 10 ms at 100 MHz
+    uint32_t last_tick = readtimer();
     while (1) {
 
         // ---- NON-BLOCKING UART RECEIVE ----
@@ -120,7 +307,14 @@ int main() {
             }
         }
 
+        uint32_t now = readtimer();
+          if((now - last_tick) >= gravity_ticks) {
+              apply_gravity(&P1, P1.x); // move piece down
+              last_tick += gravity_ticks; // keep in sync
+          }
         // ---- GAME LOGIC ALWAYS RUNNING ----
+        writeboard(&P1);
+        writeboard(&P2);
 
     }
 
