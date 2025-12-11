@@ -47,8 +47,11 @@
 #define KEY_ENTER  0xD
 #define KEY_SOFTDROP   0x28
 #define KEY_HARDDROP   0x20
+#define KEY_HOLD 0x43
+
 
 #define MAX_PIECES 1000
+#define EMPTY_HOLD 255
 
 
 #define BOARD_WIDTH 10
@@ -263,6 +266,11 @@ typedef struct{
 	uint8_t rot; // 0 ,1 ,2,3 clockwise rotations
 	uint8_t lines;
 	uint16_t next_piece_index;
+	uint32_t score;
+
+	 uint8_t hold_piece;         // 0-6, 255 for empty
+	 bool can_hold;              // true if player can hold
+	 uint8_t next_pieces[5];
 } Player;
 
 uint8_t piece_queue[MAX_PIECES];
@@ -306,35 +314,6 @@ void process_input_event(u8 player, u8 key, u8 state) {
     }
 }
 
-void writeboard(Player* p) {
-    uint32_t temp;
-    uint8_t idx;
-    uint8_t piece_cell;
-
-    for(int j = 0; j < 20; j++) {
-        for(int i = 0; i < 10; i++) {
-            idx = i + j * 10;
-
-            if(idx % 8 == 0) temp = 0;
-
-            // Check if the current piece occupies this cell
-            piece_cell = 0; // default
-            int rel_x = i - p->x; // relative to piece top-left
-            int rel_y = j - p->y;
-
-            if(rel_x >= 0 && rel_x < 4 && rel_y >= 0 && rel_y < 4) {
-                piece_cell = TETROMINOES[p->piece][p->rot][rel_y][rel_x];
-            }
-
-            // Overlay piece on grid using OR
-            temp += (p->grid[i][j] | piece_cell) << (4 * (7 - (idx % 8)));
-
-            if(idx % 8 == 7) {
-                *(p->addr + idx / 8) = temp;
-            }
-        }
-    }
-}
 
 // returns true if collision, false if no collision
 bool check_collision(Player *p, int x, int y) {
@@ -358,6 +337,62 @@ bool check_collision(Player *p, int x, int y) {
 
     return false; // no collision
 }
+void writeboard(Player* p) {
+    uint32_t temp;
+    uint8_t idx;
+    uint8_t piece_cell;
+
+    // Calculate drop position (ghost piece)
+    int drop_y = p->y;
+    while (!check_collision(p, p->x, drop_y + 1)) {
+        drop_y++;
+    }
+
+    for(int j = 0; j < 20; j++) {
+        for(int i = 0; i < 10; i++) {
+            idx = i + j * 10;
+
+            if(idx % 8 == 0) temp = 0;
+
+            // Base grid cell
+            uint8_t cell = p->grid[i][j];
+
+            // Ghost piece overlay
+            if(drop_y >= 0) {
+                int rel_x = i - p->x;
+                int rel_y = j - drop_y;
+                if(rel_x >= 0 && rel_x < 4 && rel_y >= 0 && rel_y < 4) {
+                    uint8_t ghost_cell = TETROMINOES[p->piece][p->rot][rel_y][rel_x];
+                    if(cell == 0 && ghost_cell != 0) {
+                        // Use a special color for ghost / outline
+                        cell = 9;  // pick a unique number for ghost, e.g., 9
+                    }
+                }
+            }
+
+            // Actual piece overlay
+            int rel_x = i - p->x;
+            int rel_y = j - p->y;
+            if(rel_x >= 0 && rel_x < 4 && rel_y >= 0 && rel_y < 4) {
+                piece_cell = TETROMINOES[p->piece][p->rot][rel_y][rel_x];
+            } else {
+                piece_cell = 0;
+            }
+
+            // Combine overlays
+            uint8_t final_cell = cell | piece_cell;
+
+            // Shift into temp
+            temp += final_cell << (4 * (7 - (idx % 8)));
+
+            if(idx % 8 == 7) {
+                *(p->addr + idx / 8) = temp;
+            }
+        }
+    }
+}
+
+
 
 void lock_piece(Player* p, int x) {
     uint8_t (*shape)[4] = TETROMINOES[p->piece][p->rot]; // current piece, no rotation
@@ -394,11 +429,18 @@ void init_piece_queue() {
 //returns true if game over
 bool spawn_new_piece(Player* p) {
 	p->piece = piece_queue[p->next_piece_index];  // take from shared queue
-	p->next_piece_index = (p->next_piece_index + 1) % MAX_PIECES;    // random tetromino
     p->y = 0;                       // top of board
     p->x = (BOARD_WIDTH / 2) - 2;   // center horizontally
     p->rot = 0;
-    // Optional: check for collision/game over
+    p->can_hold = true;           // reset hold ability for new piece
+
+	// shift next_pieces left and fill last from queue
+	for (int i = 0; i < 4; i++) {
+		p->next_pieces[i] = p->next_pieces[i + 1];
+	}
+	p->next_pieces[4] = piece_queue[p->next_piece_index];
+	p->next_piece_index = (p->next_piece_index + 1) % MAX_PIECES;
+
     if (check_collision(p, p->x, p->y)) {
         // handle game over
     	return true;
@@ -549,6 +591,38 @@ void apply_garbage(Player *p, uint8_t amount) {
     }
 }
 
+void handle_hold(Player* p, u8 key, u8 state, u8 prev_state) {
+    if (key != KEY_HOLD) return;
+    if (!(prev_state == 0 && state == 1)) return; // rising edge
+    if (!p->can_hold) return;                     // only once per piece
+
+    uint8_t temp = p->piece;
+    if (p->hold_piece == EMPTY_HOLD) {
+        // no held piece yet
+        p->hold_piece = temp;
+        spawn_new_piece(p);
+    } else {
+        // swap current and held piece
+        p->piece = p->hold_piece;
+        p->hold_piece = temp;
+        p->y = 0;
+        p->x = (BOARD_WIDTH / 2) - 2;
+        p->rot = 0;
+    }
+    p->can_hold = false; // cannot hold again until next piece
+}
+
+uint32_t line_score(uint8_t lines) {
+    switch(lines) {
+        case 1: return 100;
+        case 2: return 300;
+        case 3: return 500;
+        case 4: return 800;
+        default: return 0;
+    }
+}
+
+
 uint8_t garbage_from_lines(uint8_t lines) {
     switch (lines) {
         case 2: return 1;
@@ -577,7 +651,8 @@ int main() {
     // UART packet assembly state
     u8 packet[3];
     int bytes_needed = 3;
-    uint32_t gravity_ticks = 50000000; // 500 ms at 100 MHz
+    uint32_t base_gravity_ticks = 50000000;
+    uint32_t gravity_ticks = 50000000;
     uint32_t lr_ticks = 10000000; // 50 ms;
     uint32_t tick1;
     uint32_t tick2;
@@ -621,6 +696,9 @@ int main() {
         .rot = 0,
         .lines = 0,
         .next_piece_index = 1,
+		.hold_piece = EMPTY_HOLD,
+		.can_hold = true,
+		.score = 0
     };
 
     Player P2 = {
@@ -631,8 +709,16 @@ int main() {
         .rot = 0,
         .lines = 0,
         .next_piece_index = 1,
+		.hold_piece = EMPTY_HOLD,
+		.can_hold = true,
+		.score = 0
     };
 
+    for (int i = 0; i < 5; i++) {
+            P1.next_pieces[i] = piece_queue[P1.next_piece_index + i];
+            P2.next_pieces[i] = piece_queue[P2.next_piece_index + i];
+
+        }
 //    Player P1, P2;
 //    P1.addr = BOARD_P1;
 //   P2.addr = BOARD_P2;
@@ -712,6 +798,10 @@ int main() {
             // hard drop (edge only)
             handle_harddrop_edge(&P1, key1, p1Down, prev_p1Down);
             handle_harddrop_edge(&P2, key2, p2Down, prev_p2Down);
+
+            handle_hold(&P1, key1, p1Down, prev_p1Down);
+            handle_hold(&P2, key2, p2Down, prev_p2Down);
+
             prev_p1Down = p1Down;
              prev_p2Down = p2Down;
 
@@ -733,6 +823,17 @@ int main() {
             uint8_t gsend2 = garbage_from_lines(P2.lines);
             if (gsend1 > 0) apply_garbage(&P2, gsend1);
             if (gsend2 > 0) apply_garbage(&P1, gsend2);
+
+            P1.score += line_score(P1.lines);
+            P2.score += line_score(P2.lines);
+
+            // Update gravity speed based on cumulative lines
+            uint8_t total_lines = P1.lines + P2.lines; // or maintain a total_lines_cleared variable
+            gravity_ticks = base_gravity_ticks;
+            uint8_t speed_level = total_lines / 20;
+            for(int i=0; i<speed_level; i++) gravity_ticks = gravity_ticks * 9 / 10;
+            if(gravity_ticks < 5000000) gravity_ticks = 5000000;
+
             P1.lines = 0;
             P2.lines = 0;
             last_tick2 += gravity_ticks;
