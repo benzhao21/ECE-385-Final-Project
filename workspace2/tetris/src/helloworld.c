@@ -65,6 +65,7 @@
 #define LOCK_DELAY_TICKS 50000000
 
 
+
 typedef struct {
     bool no_hold;
     bool fast_grav;
@@ -321,6 +322,60 @@ const char NUM5[5][5] = {
     "####"
 };
 
+const char Q4[5][5] = {
+    " ## ",
+    "#  #",
+    "#  #",
+    "# ##",
+    " ###"
+};
+
+const char W4[5][5] = {
+    "#  #",
+    "#  #",
+    "#  #",
+    "# ##",
+    " ## #"
+};
+
+const char R4[5][5] = {
+    "### ",
+    "#  #",
+    "### ",
+    "# # ",
+    "#  #"
+};
+
+const char T4[5][5] = {
+    "####",
+    " ## ",
+    " ## ",
+    " ## ",
+    " ## "
+};
+
+const char CHECK4[5][5] = {
+    "   #",
+    "  # ",
+    "# # ",
+    " ## ",
+    " #  "
+};
+
+
+const char X4[5][5] = {
+    "#  #",
+    " ## ",
+    " ## ",
+    " ## ",
+    "#  #"
+};
+
+
+
+
+
+
 
 uint8_t p1_left_prev = 0;
 uint8_t p1_right_prev = 0;
@@ -383,19 +438,45 @@ void draw_ECE385(Player *p) {
     memset(p->grid, 0, sizeof(p->grid));
     uint8_t C = COLOR_I;
 
-    // Top row: E and C
+    // Top row: E and 3
     draw_letter_4x5(p, 0, 2, E4, 3);
     draw_letter_4x5(p, 6, 2, NUM3, C);
 
-    // Middle row: 3 and 8
+    // Middle row: C and 8
     draw_letter_4x5(p, 0, 8, C4, 3);
     draw_letter_4x5(p, 5, 8, NUM8, C);
 
-    // Bottom row: centered 5
+    // Bottom row: E and 5
     draw_letter_4x5(p, 0, 14, E4, 3);
     draw_letter_4x5(p, 5, 14, NUM5, C);
 }
 
+void clear_board(Player *p) { //clears board struct
+    for (int x = 0; x < BOARD_WIDTH; x++) {
+        for (int y = 0; y < BOARD_HEIGHT; y++) {
+            p->grid[x][y] = 0;
+        }
+    }
+}
+
+void draw_mod_list(Player *p1, Player *p2){ //draws mods on screen
+	clear_board(p1);
+	clear_board(p2);
+	draw_letter_4x5(p1, 0, 2, Q4, COLOR_L);
+	draw_letter_4x5(p1, 5, 2, mods.no_hold ? CHECK4 : X4, mods.no_hold ? COLOR_S : COLOR_Z);
+
+	draw_letter_4x5(p1, 0, 8, W4, COLOR_L);
+	draw_letter_4x5(p1, 5, 8, mods.fast_grav ? CHECK4 : X4, mods.fast_grav ? COLOR_S : COLOR_Z);
+
+	draw_letter_4x5(p1, 0, 14, E4, COLOR_L);
+	draw_letter_4x5(p1, 5, 14, mods.messy_garbage ? CHECK4 : X4, mods.messy_garbage ? COLOR_S : COLOR_Z);
+
+	draw_letter_4x5(p2, 0, 2, R4, COLOR_L);
+	draw_letter_4x5(p2, 5, 2, mods.no_garbage ? CHECK4 : X4, mods.no_garbage ? COLOR_S : COLOR_Z);
+
+	draw_letter_4x5(p2, 0, 8, T4, COLOR_L);
+	draw_letter_4x5(p2, 5, 8, mods.single_player ? CHECK4 : X4, mods.single_player ? COLOR_S : COLOR_Z);
+}
 
 
 // -------------------------------------------
@@ -414,7 +495,7 @@ void process_input_event(u8 player, u8 key, u8 state) {
     static u8 last_state = 0;
     static int have_last = 0;
 
-    // ignore duplicate repeat events
+    // ignore duplicate repeat events (this lowk doesnt really work)
     if (have_last && key == last_key && state == last_state)
         return;
 
@@ -452,7 +533,7 @@ bool check_collision(Player *p, int x, int y) {
 
     return false; // no collision
 }
-
+//dont worry about drawing pieces
 void writeboard_raw(Player* p) {
     uint32_t temp = 0;
     int idx = 0;
@@ -547,7 +628,7 @@ void lock_piece(Player* p, int x) {
 }
 
 
-// Simple LCG generator, 32-bit state
+
 static uint32_t rng_state = 1; // seed
 
 uint8_t simple_rand(int k) {
@@ -782,15 +863,12 @@ void apply_garbage(Player *p, uint8_t amount) {
             p->grid[x][19] = (x == hole) ? 0 : COLOR_GARB;  // 8 = garbage color
         }
 
-        // FIX: Move piece up by 1 for each garbage line added
-        // This happens inside the loop, so it moves up once per line
+
         p->y--;
 
-        // FIX: Check if piece is now off the top of the board (game over condition)
-        // or still colliding after moving up
         if (p->y < 0) {
             p->y = 0;  // clamp to top
-            // If it's still colliding at y=0, the game should end on next gravity tick
+
         }
     }
 }
@@ -818,9 +896,6 @@ void handle_hold(Player* p, u8 key, u8 state, u8 prev_state) {
         p->x = (BOARD_WIDTH / 2) - 2;
         p->rot = 0;
 
-        // FIX: Don't modify next_pieces array - it's already correct!
-        // The next_pieces array is maintained by spawn_new_piece()
-        // and should not be touched here
     }
     p->can_hold = false; // cannot hold again until next piece
 }
@@ -888,6 +963,44 @@ int main() {
     int p1_ready = 0;
     int p2_ready = 0;
 
+    //title screen player structs to make drawings
+    Player P1Title = {
+            .addr = BOARD_P1,
+            .piece = 0,
+            .y = 0,
+            .x = 3,
+            .rot = 0,
+            .lines = 0,
+            .next_piece_index = 1,
+    		.hold_piece = EMPTY_HOLD,
+    		.can_hold = true,
+    		.score = 0,
+    		.holdaddr = HOLDNEXT,
+    		.linestot = 0,
+    		.lock_delay_active = false,
+    		.lock_delay_start = 0
+        };
+
+        Player P2Title = {
+            .addr = BOARD_P2,
+            .piece = 0,
+            .y = 0,
+            .x = 3,
+            .rot = 0,
+            .lines = 0,
+            .next_piece_index = 1,
+    		.hold_piece = EMPTY_HOLD,
+    		.can_hold = true,
+    		.score = 0,
+    		.holdaddr = (HOLDNEXT+6),
+    		.linestot = 0,
+    		.lock_delay_active = false,
+    		.lock_delay_start = 0
+        };
+
+
+
+
     while(1) {
     	u8 b;
 		if (try_recv_byte(&b)) {
@@ -924,6 +1037,10 @@ int main() {
 		 rng_state = tick1 + tick2;
 		 break;
 	 }
+
+	 draw_mod_list(&P1Title, &P2Title);
+	 writeboard_raw(&P1Title);
+	 writeboard_raw(&P2Title);
     }
     init_piece_queue();
 
@@ -967,23 +1084,8 @@ int main() {
             P2.next_pieces[i] = piece_queue[P2.next_piece_index + i];
 
         }
-//    Player P1, P2;
-//    P1.addr = BOARD_P1;
-//   P2.addr = BOARD_P2;
-//   P1.piece = piece_queue[0];
-//   P1.y = 0;
-//   P1.x = 3;
-//   P1.rot = 0;
-//   P1.lines = 0;
-//   P1.next_piece_index = 1;
-//   P2.piece = piece_queue[0];
-//   P2.y = 0;
-//   P2.x = 3;
-//   P2.rot = 0;
-//   P2.lines = 0;
-//   P2.next_piece_index = 1;
-//
-//   // init boards
+
+   // init boards
    memset(P1.grid, 0, sizeof(P1.grid));
    memset(P2.grid, 0, sizeof(P2.grid));
    writeboard(&P1);
@@ -1092,7 +1194,7 @@ int main() {
             P2.score += line_score(P2.lines);
 
             // Update gravity speed based on cumulative lines
-            uint8_t total_lines = P1.linestot + P2.linestot; // or maintain a total_lines_cleared variable
+            uint8_t total_lines = P1.linestot + P2.linestot;
             gravity_ticks = base_gravity_ticks;
             uint8_t level = total_lines / 10;   // advance every 10 lines
             if (level > 9) level = 9;
@@ -1117,7 +1219,7 @@ int main() {
             writeboard(&P2);
 
         if (!mods.single_player) {
-            // full multiplayer nibble pack
+            // multiplayer
             nib1[0] = P1.hold_piece;
             nib1[1] = P1.next_pieces[0];
             nib1[2] = P1.next_pieces[1];
@@ -1132,14 +1234,14 @@ int main() {
             nib2[2] = P2.next_pieces[3];
             nib2[3] = P2.next_pieces[4];
         } else {
-            // single player: fill P2 area with blanks or zeros
+            // single player
             nib1[0] = P1.hold_piece;
             nib1[1] = P1.next_pieces[0];
             nib1[2] = P1.next_pieces[1];
             nib1[3] = P1.next_pieces[2];
             nib1[4] = P1.next_pieces[3];
             nib1[5] = P1.next_pieces[4];
-            nib1[6] = 0;  // P2 disabled
+            nib1[6] = 0;  // p2Next
             nib1[7] = 0;
 
             nib2[0] = 0;
