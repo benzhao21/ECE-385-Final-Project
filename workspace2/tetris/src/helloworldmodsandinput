@@ -319,6 +319,16 @@ const char NUM5[5][5] = {
 };
 
 
+// Previous key states (for rising-edge detection)
+uint8_t p1_left_prev = 0;
+uint8_t p1_right_prev = 0;
+uint8_t p1_down_prev = 0;
+
+
+uint8_t p2_left_prev = 0;
+uint8_t p2_right_prev = 0;
+uint8_t p2_down_prev = 0;
+
 
 
 
@@ -582,18 +592,38 @@ bool apply_gravity(Player* p, int x) {
     }
 }
 
-void handle_left_right(Player* p, u8 key, u8 state) {
-    if (state != 1) return; // move only on key-down
+void handle_left_right(Player *p, int key, int state, uint8_t *prev_left, uint8_t *prev_right)
+{
+    if (state == 1) {
 
-    if (key == KEY_LEFT) {
-        if (!check_collision(p, p->x - 1, p->y))
-            p->x--;
+        // LEFT
+        if (key == KEY_LEFT) {
+            if (*prev_left == 0) {  // rising edge
+                if (!check_collision(p, p->x - 1, p->y))
+                    p->x--;
+            }
+            *prev_left = 1;
+            *prev_right = 0;
+            return;
+        }
+
+        // RIGHT
+        if (key == KEY_RIGHT) {
+            if (*prev_right == 0) { // rising edge
+                if (!check_collision(p, p->x + 1, p->y))
+                    p->x++;
+            }
+            *prev_right = 1;
+            *prev_left = 0;
+            return;
+        }
     }
-    else if (key == KEY_RIGHT) {
-        if (!check_collision(p, p->x + 1, p->y))
-            p->x++;
-    }
+
+    // Key is UP
+    *prev_left = 0;
+    *prev_right = 0;
 }
+
 
 // stable gravity table
 static const uint32_t gravity_table[] = {
@@ -655,16 +685,25 @@ void handle_rotate(Player *p, u8 key, u8 state) {
     }
 }
 
-void handle_softdrop(Player *p, u8 key, u8 state) {
-    if (state != 1) return; // only act on key-down
+void handle_softdrop(Player *p, u8 key, u8 state, u8* prev_down)
+{
+    if (key == KEY_SOFTDROP && state == 1) {
 
-    if (key != KEY_SOFTDROP) return;
+        // Rising edge: just pressed now
+        if (*prev_down == 0) {
+            if (!check_collision(p, p->x, p->y + 1)) {
+                p->y++;        // move 1 cell only once per key press
+            }
+        }
 
-    // Try moving piece down by 1
-    if (!check_collision(p, p->x, p->y + 1)) {
-        p->y++;
+        *prev_down = 1;   // remember it's held
+    }
+    else {
+        *prev_down = 0;   // key released
     }
 }
+
+
 // rising-edge harddrop
 void handle_harddrop_edge(Player *p, u8 key, u8 state, u8 prev_state) {
     if (key != KEY_HARDDROP) return;
@@ -731,7 +770,9 @@ void handle_hold(Player* p, u8 key, u8 state, u8 prev_state) {
     }
     if (key != KEY_HOLD) return;
     if (!(prev_state == 0 && state == 1)) return; // rising edge
-    if (!p->can_hold) return;                     // only once per piece
+    if (!p->can_hold){ //I want to make this so that the piece gets grayed out when you can no longer use hold
+    	return;                     // only once per piece
+    }
 
     uint8_t temp = p->piece;
     if (p->hold_piece == EMPTY_HOLD) {
@@ -806,7 +847,7 @@ int main() {
     int bytes_needed = 3;
     uint32_t base_gravity_ticks = 50000000;
     uint32_t gravity_ticks = 50000000;
-    uint32_t lr_ticks = 7500000; // 50 ms;
+    uint32_t lr_ticks = 75000; // 50 ms;
     uint32_t tick1;
     uint32_t tick2;
     uint8_t nib1[8];
@@ -963,14 +1004,14 @@ int main() {
         if ((uint32_t)(now - last_tick1) >= lr_ticks) {
 
             // movement
-            handle_left_right(&P1, key1, p1Down);
+        	handle_left_right(&P1, key1, p1Down, &p1_left_prev, &p1_right_prev);
             if(!mods.single_player)
-            handle_left_right(&P2, key2, p2Down);
+            	handle_left_right(&P2, key2, p2Down, &p2_left_prev, &p2_right_prev);
 
             // soft drop (held)
-            handle_softdrop(&P1, key1, p1Down);
+            handle_softdrop(&P1, key1, p1Down, &p1_down_prev);
             if(!mods.single_player)
-            handle_softdrop(&P2, key2, p2Down);
+            handle_softdrop(&P2, key2, p2Down, &p2_down_prev);
 
             // rotate (edge only)
             handle_rotate_edge(&P1, key1, p1Down, prev_p1Down);
