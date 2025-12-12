@@ -57,29 +57,33 @@
 #define BOARD_WIDTH 10
 #define BOARD_HEIGHT 20
 
-// ========= UART FIFO ===========
+// ----------------------
+// UART INTERRUPT FIFO
+// ----------------------
 #define UART_FIFO_SIZE 256
-volatile uint8_t uart_fifo[UART_FIFO_SIZE];
-volatile uint16_t uart_head = 0;
-volatile uint16_t uart_tail = 0;
+volatile u8 uart_fifo[UART_FIFO_SIZE];
+volatile int uart_head = 0;
+volatile int uart_tail = 0;
 
-static inline int fifo_not_empty() {
-    return uart_head != uart_tail;
+static inline int uart_fifo_empty() {
+    return uart_head == uart_tail;
 }
 
-static inline void fifo_push(uint8_t b) {
-    uint16_t next = (uart_head + 1) & (UART_FIFO_SIZE - 1);
-    if (next != uart_tail) {   // ignore overflow
+static inline void uart_fifo_push(u8 b) {
+    int next = (uart_head + 1) & (UART_FIFO_SIZE - 1);
+    if (next != uart_tail) {   // drop when full (should not happen)
         uart_fifo[uart_head] = b;
         uart_head = next;
     }
 }
 
-static inline uint8_t fifo_pop() {
-    uint8_t b = uart_fifo[uart_tail];
+static inline int uart_fifo_pop(u8 *b) {
+    if (uart_fifo_empty()) return 0;
+    *b = uart_fifo[uart_tail];
     uart_tail = (uart_tail + 1) & (UART_FIFO_SIZE - 1);
-    return b;
+    return 1;
 }
+
 
 
 // TETROMINOES[piece][rot][row][col]
@@ -662,13 +666,14 @@ uint8_t garbage_from_lines(uint8_t lines) {
     }
 }
 
-void UartHandler(void *CallBackRef, unsigned int Event, unsigned int EventData) {
-    if (Event == XUL_EVENT_RECV_DATA) {
-        // Pull ALL bytes in HW FIFO
-        uint8_t buf[16];
-        int n = XUartLite_Recv((XUartLite*)CallBackRef, buf, sizeof(buf));
-        for (int i = 0; i < n; i++)
-            fifo_push(buf[i]);
+void UartHandler(void *CallBackRef, unsigned int ByteCount)
+{
+    XUartLite *Inst = (XUartLite*)CallBackRef;
+    u8 buf[16];
+
+    int n = XUartLite_Recv(Inst, buf, sizeof(buf));
+    for (int i = 0; i < n; i++) {
+        uart_fifo_push(buf[i]);
     }
 }
 
@@ -710,32 +715,22 @@ int main() {
     uint32_t b2;
     int p1_ready = 0;
     int p2_ready = 0;
-    
+
     // Maintain per-player key + state
     u8 key1 = 0, key2 = 0;
     u8 p1Down = 0, p2Down = 0;
     u8 prev_p1Down = 0, prev_p2Down = 0;
 
     while(1) {
-    	while (fifo_not_empty()) {
-            uint8_t b = fifo_pop();
-
+    	while (uart_fifo_pop(&b)) {
             packet[3 - bytes_needed] = b;
             bytes_needed--;
 
             if (bytes_needed == 0) {
                 process_input_event(packet[0], packet[1], packet[2]);
-
-            if (packet[0] == 1) {
-                key1 = packet[1];
-                p1Down = packet[2];
-            }
-            else if (packet[0] == 2) {
-                key2 = packet[1];
-                p2Down = packet[2];
-            }
-
-            bytes_needed = 3;
+                if (packet[0] == 1) { key1 = packet[1]; p1Down = packet[2]; }
+                if (packet[0] == 2) { key2 = packet[1]; p2Down = packet[2]; }
+                bytes_needed = 3;
             }
         }
 	 if (packet[2] == 1 && packet[1] == KEY_ENTER) {
@@ -819,24 +814,14 @@ int main() {
         //-----------------------------
         // NON-BLOCKING UART INPUT
         //-----------------------------
-        while (fifo_not_empty()) {
-            uint8_t b = fifo_pop();
-
+        while (uart_fifo_pop(&b)) {
             packet[3 - bytes_needed] = b;
             bytes_needed--;
 
             if (bytes_needed == 0) {
                 process_input_event(packet[0], packet[1], packet[2]);
-
-                if (packet[0] == 1) {
-                    key1 = packet[1];
-                    p1Down = packet[2];
-                }
-                else if (packet[0] == 2) {
-                    key2 = packet[1];
-                    p2Down = packet[2];
-                }
-
+                if (packet[0] == 1) { key1 = packet[1]; p1Down = packet[2]; }
+                if (packet[0] == 2) { key2 = packet[1]; p2Down = packet[2]; }
                 bytes_needed = 3;
             }
         }
