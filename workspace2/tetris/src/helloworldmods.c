@@ -336,7 +336,7 @@ void process_input_event(u8 player, u8 key, u8 state) {
 
 // returns true if collision, false if no collision
 bool check_collision(Player *p, int x, int y) {
-    uint8_t (*shape)[4] = TETROMINOES[p->piece][p->rot]; // current piece, 0� orientation
+    uint8_t (*shape)[4] = TETROMINOES[p->piece][p->rot]; 
 
     for(int i = 0; i < 4; i++) {       // column in tetromino
         for(int j = 0; j < 4; j++) {   // row in tetromino

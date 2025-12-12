@@ -138,7 +138,7 @@ def rawinput_thread():
 # serial communication
 
 def serial_thread(): #this stuff is chill, just connect to FPGA COM port
-    ser = serial.Serial("COM4", 115200, timeout=0.1)
+    ser = serial.Serial("COM3", 115200, timeout=0.1)
     print("[Serial] Connected to FPGA.")
 
     time.sleep(0.01)
