@@ -48,6 +48,11 @@
 #define KEY_SOFTDROP   0x28
 #define KEY_HARDDROP   0x20
 #define KEY_HOLD 0x43
+#define KEY_NO_HOLD_MOD 0x51
+#define KEY_FAST_GRAV_MOD 0x57
+#define KEY_MESSY_GARBAGE_MOD 0x45
+#define KEY_NO_GARBAGE_MOD 0x52
+#define KEY_SINGLE_PLAYER_MOD 0x54
 
 
 #define MAX_PIECES 1000
@@ -56,6 +61,26 @@
 
 #define BOARD_WIDTH 10
 #define BOARD_HEIGHT 20
+
+#define LOCK_DELAY_TICKS 50000000
+
+
+typedef struct {
+    bool no_hold;
+    bool fast_grav;
+    bool messy_garbage;
+    bool no_garbage;
+    bool single_player;
+} GameMods;
+
+GameMods mods = {
+    .no_hold = false,
+    .fast_grav = false,
+    .messy_garbage = false,
+    .no_garbage = false,
+    .single_player = false,
+};
+
 
 // TETROMINOES[piece][rot][row][col]
 uint8_t TETROMINOES[7][4][4][4] = {
@@ -256,6 +281,58 @@ uint8_t TETROMINOES[7][4][4][4] = {
     }
 };
 
+const char E4[5][5] = {
+    "####",
+    "#   ",
+    "### ",
+    "#   ",
+    "####"
+};
+
+const char C4[5][5] = {
+    " ###",
+    "#   ",
+    "#   ",
+    "#   ",
+    " ###"
+};
+
+const char NUM3[5][5] = {
+    "### ",
+    "  # ",
+    "### ",
+    "  # ",
+    "### "
+};
+
+const char NUM8[5][5] = {
+    " ## ",
+    "#  #",
+    " ## ",
+    "#  #",
+    " ## "
+};
+
+const char NUM5[5][5] = {
+    "####",
+    "#   ",
+    "### ",
+    "   #",
+    "####"
+};
+
+
+uint8_t p1_left_prev = 0;
+uint8_t p1_right_prev = 0;
+uint8_t p1_down_prev = 0;
+
+
+uint8_t p2_left_prev = 0;
+uint8_t p2_right_prev = 0;
+uint8_t p2_down_prev = 0;
+
+
+
 
 typedef struct{
 	uint8_t grid[10][20];
@@ -273,6 +350,9 @@ typedef struct{
 	 uint8_t hold_piece;         // 0-6, 255 for empty
 	 bool can_hold;              // true if player can hold
 	 uint8_t next_pieces[5];
+
+	 bool lock_delay_active;
+	 uint32_t lock_delay_start;
 } Player;
 
 uint8_t piece_queue[MAX_PIECES];
@@ -283,6 +363,39 @@ XUartLite Uart;
 XGpio P1KeycodeGpio;
 XGpio P2KeycodeGpio;
 XTmrCtr Usb_timer;
+
+
+void draw_letter_4x5(Player *p, int x0, int y0, const char pattern[5][5], uint8_t color) {
+    for (int y = 0; y < 5; y++) {
+        for (int x = 0; x < 4; x++) {
+            if (pattern[y][x] == '#') {
+                int gx = x0 + x;
+                int gy = y0 + y;
+                if (gx >= 0 && gx < 10 && gy >= 0 && gy < 20)
+                    p->grid[gx][gy] = color;
+            }
+        }
+    }
+}
+
+
+void draw_ECE385(Player *p) {
+    memset(p->grid, 0, sizeof(p->grid));
+    uint8_t C = COLOR_I;
+
+    // Top row: E and C
+    draw_letter_4x5(p, 0, 2, E4, 3);
+    draw_letter_4x5(p, 6, 2, NUM3, C);
+
+    // Middle row: 3 and 8
+    draw_letter_4x5(p, 0, 8, C4, 3);
+    draw_letter_4x5(p, 5, 8, NUM8, C);
+
+    // Bottom row: centered 5
+    draw_letter_4x5(p, 0, 14, E4, 3);
+    draw_letter_4x5(p, 5, 14, NUM5, C);
+}
+
 
 
 // -------------------------------------------
@@ -319,7 +432,7 @@ void process_input_event(u8 player, u8 key, u8 state) {
 
 // returns true if collision, false if no collision
 bool check_collision(Player *p, int x, int y) {
-    uint8_t (*shape)[4] = TETROMINOES[p->piece][p->rot]; 
+    uint8_t (*shape)[4] = TETROMINOES[p->piece][p->rot];
 
     for(int i = 0; i < 4; i++) {       // column in tetromino
         for(int j = 0; j < 4; j++) {   // row in tetromino
@@ -339,6 +452,31 @@ bool check_collision(Player *p, int x, int y) {
 
     return false; // no collision
 }
+
+void writeboard_raw(Player* p) {
+    uint32_t temp = 0;
+    int idx = 0;
+
+    for (int j = 0; j < 20; j++) {
+        for (int i = 0; i < 10; i++) {
+            uint8_t cell = p->grid[i][j];
+
+            // pack into 32-bit temp
+            if (idx % 8 == 0)
+                temp = 0;
+
+            temp |= (cell & 0xF) << (4 * (7 - (idx % 8)));
+
+            if (idx % 8 == 7) {
+                *(p->addr + (idx / 8)) = temp;
+            }
+
+            idx++;
+        }
+    }
+}
+
+
 void writeboard(Player* p) {
     uint32_t temp;
     uint8_t idx;
@@ -446,31 +584,73 @@ bool spawn_new_piece(Player* p) {
 
 
 // Returns true if piece was locked (hit the bottom or another piece)
-bool apply_gravity(Player* p, int x) {
+bool apply_gravity(Player* p, int x, uint32_t current_tick) {
     if(!check_collision(p, x, p->y + 1)) {
-        // Move down
+        // Can move down - cancel any active lock delay
         p->y++;
-        return false; // piece not locked yet
+        p->lock_delay_active = false;
+        return false;
     } else {
-        // Collision detected lock piece
-        lock_piece(p, x);
-        bool gameover = spawn_new_piece(p);
-        return gameover;
+        // Collision detected - start or continue lock delay
+        if (!p->lock_delay_active) {
+            // Start the lock delay timer
+            p->lock_delay_active = true;
+            p->lock_delay_start = current_tick;
+            return false;  // Don't lock yet
+        } else {
+            // Check if lock delay has expired
+            if ((uint32_t)(current_tick - p->lock_delay_start) >= LOCK_DELAY_TICKS) {
+                // Lock delay expired - lock the piece
+                lock_piece(p, x);
+                p->lock_delay_active = false;
+                bool gameover = spawn_new_piece(p);
+                return gameover;
+            }
+            return false;  // Still in lock delay
+        }
     }
 }
 
-void handle_left_right(Player* p, u8 key, u8 state) {
-    if (state != 1) return; // move only on key-down
+void handle_left_right(Player *p, int key, int state, uint8_t *prev_left, uint8_t *prev_right)
+{
+    if (state == 1) {
+        // LEFT
+        if (key == KEY_LEFT) {
+            if (*prev_left == 0) {
+                if (!check_collision(p, p->x - 1, p->y)) {
+                    p->x--;
+                    // Reset lock delay if piece can now move down
+                    if (!check_collision(p, p->x, p->y + 1)) {
+                        p->lock_delay_active = false;
+                    }
+                }
+            }
+            *prev_left = 1;
+            *prev_right = 0;
+            return;
+        }
 
-    if (key == KEY_LEFT) {
-        if (!check_collision(p, p->x - 1, p->y))
-            p->x--;
+        // RIGHT
+        if (key == KEY_RIGHT) {
+            if (*prev_right == 0) {
+                if (!check_collision(p, p->x + 1, p->y)) {
+                    p->x++;
+                    // Reset lock delay if piece can now move down
+                    if (!check_collision(p, p->x, p->y + 1)) {
+                        p->lock_delay_active = false;
+                    }
+                }
+            }
+            *prev_right = 1;
+            *prev_left = 0;
+            return;
+        }
     }
-    else if (key == KEY_RIGHT) {
-        if (!check_collision(p, p->x + 1, p->y))
-            p->x++;
-    }
+
+    *prev_left = 0;
+    *prev_right = 0;
 }
+
 
 // stable gravity table
 static const uint32_t gravity_table[] = {
@@ -532,16 +712,25 @@ void handle_rotate(Player *p, u8 key, u8 state) {
     }
 }
 
-void handle_softdrop(Player *p, u8 key, u8 state) {
-    if (state != 1) return; // only act on key-down
+void handle_softdrop(Player *p, u8 key, u8 state, u8* prev_down)
+{
+    if (key == KEY_SOFTDROP && state == 1) {
 
-    if (key != KEY_SOFTDROP) return;
+        // Rising edge: just pressed now
+        if (*prev_down == 0) {
+            if (!check_collision(p, p->x, p->y + 1)) {
+                p->y++;        // move 1 cell only once per key press
+            }
+        }
 
-    // Try moving piece down by 1
-    if (!check_collision(p, p->x, p->y + 1)) {
-        p->y++;
+        *prev_down = 1;   // remember it's held
+    }
+    else {
+        *prev_down = 0;   // key released
     }
 }
+
+
 // rising-edge harddrop
 void handle_harddrop_edge(Player *p, u8 key, u8 state, u8 prev_state) {
     if (key != KEY_HARDDROP) return;
@@ -556,7 +745,6 @@ void handle_harddrop_edge(Player *p, u8 key, u8 state, u8 prev_state) {
     spawn_new_piece(p);
 }
 
-// optional: rising-edge rotate (if you want single rotation per press)
 void handle_rotate_edge(Player *p, u8 key, u8 state, u8 prev_state) {
     if (!(prev_state == 0 && state == 1)) return;
     uint8_t old_rot = p->rot;
@@ -569,12 +757,20 @@ void handle_rotate_edge(Player *p, u8 key, u8 state, u8 prev_state) {
     }
     if (check_collision(p, p->x, p->y)) {
         p->rot = old_rot;
+    } else {
+        // Successful rotation - reset lock delay if piece can now move down
+        if (!check_collision(p, p->x, p->y + 1)) {
+            p->lock_delay_active = false;
+        }
     }
 }
 void apply_garbage(Player *p, uint8_t amount) {
     int hole = simple_rand(10);
     while (amount--) {
         // shift board up
+        if(mods.messy_garbage){
+            hole = simple_rand(10);
+        }
         for (int y = 0; y < 19; y++) {
             for (int x = 0; x < 10; x++) {
                 p->grid[x][y] = p->grid[x][y + 1];
@@ -600,9 +796,14 @@ void apply_garbage(Player *p, uint8_t amount) {
 }
 
 void handle_hold(Player* p, u8 key, u8 state, u8 prev_state) {
+    if(mods.no_hold){
+        return;
+    }
     if (key != KEY_HOLD) return;
     if (!(prev_state == 0 && state == 1)) return; // rising edge
-    if (!p->can_hold) return;                     // only once per piece
+    if (!p->can_hold){ //I want to make this so that the piece gets grayed out when you can no longer use hold
+    	return;                     // only once per piece
+    }
 
     uint8_t temp = p->piece;
     if (p->hold_piece == EMPTY_HOLD) {
@@ -677,7 +878,7 @@ int main() {
     int bytes_needed = 3;
     uint32_t base_gravity_ticks = 50000000;
     uint32_t gravity_ticks = 50000000;
-    uint32_t lr_ticks = 7500000; // 50 ms;
+    uint32_t lr_ticks = 75000; // 50 ms;
     uint32_t tick1;
     uint32_t tick2;
     uint8_t nib1[8];
@@ -709,6 +910,16 @@ int main() {
 				 tick2 = XTmrCtr_GetValue(&Usb_timer, 0);
 			 }
 		 }
+     //GAME MODS
+    if (packet[2] == 1 && packet[1] == KEY_FAST_GRAV_MOD) (mods.fast_grav = true);
+    if (packet[2] == 1 && packet[1] == KEY_NO_HOLD_MOD) (mods.no_hold = true);
+    if (packet[2] == 1 && packet[1] == KEY_MESSY_GARBAGE_MOD) (mods.messy_garbage = true);
+    if (packet[2] == 1 && packet[1] == KEY_NO_GARBAGE_MOD) (mods.no_garbage = true);
+    if (packet[2] == 1 && packet[1] == KEY_SINGLE_PLAYER_MOD) (mods.single_player = true);
+
+
+
+
 	 if (p1_ready && p2_ready) {
 		 rng_state = tick1 + tick2;
 		 break;
@@ -728,7 +939,9 @@ int main() {
 		.can_hold = true,
 		.score = 0,
 		.holdaddr = HOLDNEXT,
-		.linestot = 0
+		.linestot = 0,
+		.lock_delay_active = false,
+		.lock_delay_start = 0
     };
 
     Player P2 = {
@@ -743,7 +956,9 @@ int main() {
 		.can_hold = true,
 		.score = 0,
 		.holdaddr = (HOLDNEXT+6),
-		.linestot = 0
+		.linestot = 0,
+		.lock_delay_active = false,
+		.lock_delay_start = 0
     };
     *(HOLDNEXT) = 0x01234561;
     *(HOLDNEXT+1) = 0x12340000;
@@ -772,7 +987,14 @@ int main() {
    memset(P1.grid, 0, sizeof(P1.grid));
    memset(P2.grid, 0, sizeof(P2.grid));
    writeboard(&P1);
-   writeboard(&P2);
+
+   if(!mods.single_player){
+	   writeboard(&P2);
+   } else {
+	   draw_ECE385(&P2);
+	   writeboard_raw(&P2);
+   }
+
 
     uint32_t last_tick1 = XTmrCtr_GetValue(&Usb_timer, 0);
     uint32_t last_tick2 = XTmrCtr_GetValue(&Usb_timer, 0);
@@ -817,26 +1039,30 @@ int main() {
         if ((uint32_t)(now - last_tick1) >= lr_ticks) {
 
             // movement
-            handle_left_right(&P1, key1, p1Down);
-            handle_left_right(&P2, key2, p2Down);
+        	handle_left_right(&P1, key1, p1Down, &p1_left_prev, &p1_right_prev);
+            if(!mods.single_player)
+            	handle_left_right(&P2, key2, p2Down, &p2_left_prev, &p2_right_prev);
 
             // soft drop (held)
-            handle_softdrop(&P1, key1, p1Down);
-            handle_softdrop(&P2, key2, p2Down);
+            handle_softdrop(&P1, key1, p1Down, &p1_down_prev);
+            if(!mods.single_player)
+            handle_softdrop(&P2, key2, p2Down, &p2_down_prev);
 
             // rotate (edge only)
             handle_rotate_edge(&P1, key1, p1Down, prev_p1Down);
+            if(!mods.single_player)
             handle_rotate_edge(&P2, key2, p2Down, prev_p2Down);
 
             // hard drop (edge only)
             handle_harddrop_edge(&P1, key1, p1Down, prev_p1Down);
+            if(!mods.single_player)
             handle_harddrop_edge(&P2, key2, p2Down, prev_p2Down);
 
             handle_hold(&P1, key1, p1Down, prev_p1Down);
-            handle_hold(&P2, key2, p2Down, prev_p2Down);
+            if(!mods.single_player) handle_hold(&P2, key2, p2Down, prev_p2Down);
 
             prev_p1Down = p1Down;
-             prev_p2Down = p2Down;
+            if(!mods.single_player) prev_p2Down = p2Down;
 
             last_tick1 += lr_ticks;
         }
@@ -845,19 +1071,24 @@ int main() {
         // GRAVITY TICK
         //-----------------------------
         if ((uint32_t)(now - last_tick2) >= gravity_ticks) {
-
-            bool g1 = apply_gravity(&P1, P1.x);
-            bool g2 = apply_gravity(&P2, P2.x);
+        	bool g2 = false;
+            bool g1 = apply_gravity(&P1, P1.x, now);
+            if(!mods.single_player) g2 = apply_gravity(&P2, P2.x, now);
 
             clear_lines(&P1);
             clear_lines(&P2);
 
             uint8_t gsend1 = garbage_from_lines(P1.lines);
             uint8_t gsend2 = garbage_from_lines(P2.lines);
-            if (gsend1 > 0) apply_garbage(&P2, gsend1);
-            if (gsend2 > 0) apply_garbage(&P1, gsend2);
+
+            if(!mods.no_garbage && !mods.single_player){
+                if (gsend1 > 0) apply_garbage(&P2, gsend1);
+                if (gsend2 > 0) apply_garbage(&P1, gsend2);
+            }
+
 
             P1.score += line_score(P1.lines);
+            if(!mods.single_player)
             P2.score += line_score(P2.lines);
 
             // Update gravity speed based on cumulative lines
@@ -867,6 +1098,9 @@ int main() {
             if (level > 9) level = 9;
             gravity_ticks = gravity_table[level];
 
+            if(mods.fast_grav){
+                gravity_ticks = gravity_table[level] - 10000000;
+            }
 
             P1.lines = 0;
             P2.lines = 0;
@@ -879,21 +1113,41 @@ int main() {
         // RENDER
         //-----------------------------
         writeboard(&P1);
-        writeboard(&P2);
+        if(!mods.single_player)
+            writeboard(&P2);
 
-        nib1[0] = P1.hold_piece;
-        nib1[1] = P1.next_pieces[0];
-        nib1[2] = P1.next_pieces[1];
-        nib1[3] = P1.next_pieces[2];
-        nib1[4] = P1.next_pieces[3];
-        nib1[5] = P1.next_pieces[4];
-        nib1[6] = P2.hold_piece;
-        nib1[7] = P2.next_pieces[0];
+        if (!mods.single_player) {
+            // full multiplayer nibble pack
+            nib1[0] = P1.hold_piece;
+            nib1[1] = P1.next_pieces[0];
+            nib1[2] = P1.next_pieces[1];
+            nib1[3] = P1.next_pieces[2];
+            nib1[4] = P1.next_pieces[3];
+            nib1[5] = P1.next_pieces[4];
+            nib1[6] = P2.hold_piece;
+            nib1[7] = P2.next_pieces[0];
 
-        nib2[0] = P2.next_pieces[1];
-        nib2[1] = P2.next_pieces[2];
-        nib2[2] = P2.next_pieces[3];
-        nib2[3] = P2.next_pieces[4];
+            nib2[0] = P2.next_pieces[1];
+            nib2[1] = P2.next_pieces[2];
+            nib2[2] = P2.next_pieces[3];
+            nib2[3] = P2.next_pieces[4];
+        } else {
+            // single player: fill P2 area with blanks or zeros
+            nib1[0] = P1.hold_piece;
+            nib1[1] = P1.next_pieces[0];
+            nib1[2] = P1.next_pieces[1];
+            nib1[3] = P1.next_pieces[2];
+            nib1[4] = P1.next_pieces[3];
+            nib1[5] = P1.next_pieces[4];
+            nib1[6] = 0;  // P2 disabled
+            nib1[7] = 0;
+
+            nib2[0] = 0;
+            nib2[1] = 0;
+            nib2[2] = 0;
+            nib2[3] = 0;
+        }
+
 
         b1 = pack8Nibbles(nib1);
         b2 = pack8Nibbles(nib2);
