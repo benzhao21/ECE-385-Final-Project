@@ -267,6 +267,7 @@ typedef struct{
 	uint8_t lines;
 	uint16_t next_piece_index;
 	uint32_t score;
+	volatile uint32_t* holdaddr;
 
 	 uint8_t hold_piece;         // 0-6, 255 for empty
 	 bool can_hold;              // true if player can hold
@@ -357,33 +358,28 @@ void writeboard(Player* p) {
             // Base grid cell
             uint8_t cell = p->grid[i][j];
 
-            // Ghost piece overlay
-            if(drop_y >= 0) {
-                int rel_x = i - p->x;
-                int rel_y = j - drop_y;
-                if(rel_x >= 0 && rel_x < 4 && rel_y >= 0 && rel_y < 4) {
-                    uint8_t ghost_cell = TETROMINOES[p->piece][p->rot][rel_y][rel_x];
-                    if(cell == 0 && ghost_cell != 0) {
-                        // Use a special color for ghost / outline
-                        cell = 9;  // pick a unique number for ghost, e.g., 9
-                    }
+            // Ghost piece overlay (only if actual piece not present)
+            int rel_x = i - p->x;
+            int rel_y = j - drop_y;
+            if(rel_x >= 0 && rel_x < 4 && rel_y >= 0 && rel_y < 4) {
+                uint8_t ghost_cell = TETROMINOES[p->piece][p->rot][rel_y][rel_x];
+                if(ghost_cell != 0 && cell == 0) {
+                    cell = 9;  // ghost color
                 }
             }
 
-            // Actual piece overlay
-            int rel_x = i - p->x;
-            int rel_y = j - p->y;
+            // Actual piece overlay (draw on top)
+            rel_x = i - p->x;
+            rel_y = j - p->y;
             if(rel_x >= 0 && rel_x < 4 && rel_y >= 0 && rel_y < 4) {
                 piece_cell = TETROMINOES[p->piece][p->rot][rel_y][rel_x];
-            } else {
-                piece_cell = 0;
+                if(piece_cell != 0) {
+                    cell = piece_cell;  // overwrite ghost/grid
+                }
             }
 
-            // Combine overlays
-            uint8_t final_cell = cell | piece_cell;
-
             // Shift into temp
-            temp += final_cell << (4 * (7 - (idx % 8)));
+            temp += cell << (4 * (7 - (idx % 8)));
 
             if(idx % 8 == 7) {
                 *(p->addr + idx / 8) = temp;
@@ -391,7 +387,6 @@ void writeboard(Player* p) {
         }
     }
 }
-
 
 
 void lock_piece(Player* p, int x) {
@@ -428,7 +423,7 @@ void init_piece_queue() {
 }
 //returns true if game over
 bool spawn_new_piece(Player* p) {
-	p->piece = piece_queue[p->next_piece_index];  // take from shared queue
+	p->piece = p->next_pieces[0];  // take from shared queue
     p->y = 0;                       // top of board
     p->x = (BOARD_WIDTH / 2) - 2;   // center horizontally
     p->rot = 0;
@@ -570,6 +565,7 @@ void handle_rotate_edge(Player *p, u8 key, u8 state, u8 prev_state) {
     }
 }
 void apply_garbage(Player *p, uint8_t amount) {
+    int hole = simple_rand(10);
     while (amount--) {
         // shift board up
         for (int y = 0; y < 19; y++) {
@@ -579,14 +575,19 @@ void apply_garbage(Player *p, uint8_t amount) {
         }
 
         // make bottom row garbage
-        int hole = simple_rand(10);   // get hole in [0,9]
         for (int x = 0; x < 10; x++) {
             p->grid[x][19] = (x == hole) ? 0 : COLOR_GARB;  // 8 = garbage color
         }
 
-        // after garbage insertion, piece should move up if needed
-        if (check_collision(p, p->x, p->y)) {
-            p->y--;
+        // FIX: Move piece up by 1 for each garbage line added
+        // This happens inside the loop, so it moves up once per line
+        p->y--;
+
+        // FIX: Check if piece is now off the top of the board (game over condition)
+        // or still colliding after moving up
+        if (p->y < 0) {
+            p->y = 0;  // clamp to top
+            // If it's still colliding at y=0, the game should end on next gravity tick
         }
     }
 }
@@ -608,6 +609,10 @@ void handle_hold(Player* p, u8 key, u8 state, u8 prev_state) {
         p->y = 0;
         p->x = (BOARD_WIDTH / 2) - 2;
         p->rot = 0;
+
+        // FIX: Don't modify next_pieces array - it's already correct!
+        // The next_pieces array is maintained by spawn_new_piece()
+        // and should not be touched here
     }
     p->can_hold = false; // cannot hold again until next piece
 }
@@ -622,6 +627,15 @@ uint32_t line_score(uint8_t lines) {
     }
 }
 
+uint32_t pack8Nibbles(uint8_t nibbles[8]) {
+    uint32_t result = 0;
+    for (int i = 0; i < 8; i++) {
+        result = (result << 4) | (nibbles[i] & 0xF); // mask to ensure 4 bits
+    }
+    return result;
+}
+
+
 
 uint8_t garbage_from_lines(uint8_t lines) {
     switch (lines) {
@@ -631,6 +645,8 @@ uint8_t garbage_from_lines(uint8_t lines) {
         default: return 0;
     }
 }
+
+#define HOLDNEXT ((volatile uint32_t*) 0x44A00000)
 
 int main() {
     init_platform();
@@ -648,6 +664,7 @@ int main() {
     XGpio_Initialize(&P2KeycodeGpio, PLAYER_2_CODE_GPIO_ID);
     XGpio_SetDataDirection(&P2KeycodeGpio, 1, 0);
 
+
     // UART packet assembly state
     u8 packet[3];
     int bytes_needed = 3;
@@ -656,6 +673,10 @@ int main() {
     uint32_t lr_ticks = 10000000; // 50 ms;
     uint32_t tick1;
     uint32_t tick2;
+    uint8_t nib1[8];
+    uint8_t nib2[8];
+    uint32_t b1;
+    uint32_t b2;
     int p1_ready = 0;
     int p2_ready = 0;
 
@@ -698,7 +719,8 @@ int main() {
         .next_piece_index = 1,
 		.hold_piece = EMPTY_HOLD,
 		.can_hold = true,
-		.score = 0
+		.score = 0,
+		.holdaddr = HOLDNEXT
     };
 
     Player P2 = {
@@ -711,9 +733,11 @@ int main() {
         .next_piece_index = 1,
 		.hold_piece = EMPTY_HOLD,
 		.can_hold = true,
-		.score = 0
+		.score = 0,
+		.holdaddr = (HOLDNEXT+6)
     };
-
+    *(HOLDNEXT) = 0x01234561;
+    *(HOLDNEXT+1) = 0x12340000;
     for (int i = 0; i < 5; i++) {
             P1.next_pieces[i] = piece_queue[P1.next_piece_index + i];
             P2.next_pieces[i] = piece_queue[P2.next_piece_index + i];
@@ -830,7 +854,7 @@ int main() {
             // Update gravity speed based on cumulative lines
             uint8_t total_lines = P1.lines + P2.lines; // or maintain a total_lines_cleared variable
             gravity_ticks = base_gravity_ticks;
-            uint8_t speed_level = total_lines / 20;
+            uint8_t speed_level = total_lines / 10;
             for(int i=0; i<speed_level; i++) gravity_ticks = gravity_ticks * 9 / 10;
             if(gravity_ticks < 5000000) gravity_ticks = 5000000;
 
@@ -846,6 +870,26 @@ int main() {
         //-----------------------------
         writeboard(&P1);
         writeboard(&P2);
+
+        nib1[0] = P1.hold_piece;
+        nib1[1] = P1.next_pieces[0];
+        nib1[2] = P1.next_pieces[1];
+        nib1[3] = P1.next_pieces[2];
+        nib1[4] = P1.next_pieces[3];
+        nib1[5] = P1.next_pieces[4];
+        nib1[6] = P2.hold_piece;
+        nib1[7] = P2.next_pieces[0];
+
+        nib2[0] = P2.next_pieces[1];
+        nib2[1] = P2.next_pieces[2];
+        nib2[2] = P2.next_pieces[3];
+        nib2[3] = P2.next_pieces[4];
+
+        b1 = pack8Nibbles(nib1);
+        b2 = pack8Nibbles(nib2);
+        *(HOLDNEXT) = b1;
+        *(HOLDNEXT + 1) = b2;
+
     }
 
 
