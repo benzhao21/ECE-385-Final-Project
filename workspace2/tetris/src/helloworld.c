@@ -265,6 +265,7 @@ typedef struct{
 	int16_t y; // signed now
 	uint8_t rot; // 0 ,1 ,2,3 clockwise rotations
 	uint8_t lines;
+	uint32_t linestot;
 	uint16_t next_piece_index;
 	uint32_t score;
 	volatile uint32_t* holdaddr;
@@ -471,6 +472,12 @@ void handle_left_right(Player* p, u8 key, u8 state) {
     }
 }
 
+// stable gravity table
+static const uint32_t gravity_table[] = {
+    50000000, 45000000, 40000000, 35000000, 30000000,
+    25000000, 20000000, 15000000, 10000000, 5000000
+};
+
 // Returns number of cleared lines
 void clear_lines(Player *p) {
     // Scan from bottom to top
@@ -498,7 +505,7 @@ void clear_lines(Player *p) {
             y++;  // re-check the same y index because rows shifted down
         }
     }
-
+    p->linestot += p->lines;
     return;
 }
 
@@ -670,7 +677,7 @@ int main() {
     int bytes_needed = 3;
     uint32_t base_gravity_ticks = 50000000;
     uint32_t gravity_ticks = 50000000;
-    uint32_t lr_ticks = 10000000; // 50 ms;
+    uint32_t lr_ticks = 7500000; // 50 ms;
     uint32_t tick1;
     uint32_t tick2;
     uint8_t nib1[8];
@@ -720,7 +727,8 @@ int main() {
 		.hold_piece = EMPTY_HOLD,
 		.can_hold = true,
 		.score = 0,
-		.holdaddr = HOLDNEXT
+		.holdaddr = HOLDNEXT,
+		.linestot = 0
     };
 
     Player P2 = {
@@ -734,7 +742,8 @@ int main() {
 		.hold_piece = EMPTY_HOLD,
 		.can_hold = true,
 		.score = 0,
-		.holdaddr = (HOLDNEXT+6)
+		.holdaddr = (HOLDNEXT+6),
+		.linestot = 0
     };
     *(HOLDNEXT) = 0x01234561;
     *(HOLDNEXT+1) = 0x12340000;
@@ -852,11 +861,12 @@ int main() {
             P2.score += line_score(P2.lines);
 
             // Update gravity speed based on cumulative lines
-            uint8_t total_lines = P1.lines + P2.lines; // or maintain a total_lines_cleared variable
+            uint8_t total_lines = P1.linestot + P2.linestot; // or maintain a total_lines_cleared variable
             gravity_ticks = base_gravity_ticks;
-            uint8_t speed_level = total_lines / 10;
-            for(int i=0; i<speed_level; i++) gravity_ticks = gravity_ticks * 9 / 10;
-            if(gravity_ticks < 5000000) gravity_ticks = 5000000;
+            uint8_t level = total_lines / 10;   // advance every 10 lines
+            if (level > 9) level = 9;
+            gravity_ticks = gravity_table[level];
+
 
             P1.lines = 0;
             P2.lines = 0;
