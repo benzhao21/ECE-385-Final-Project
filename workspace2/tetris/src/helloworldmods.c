@@ -57,33 +57,21 @@
 #define BOARD_WIDTH 10
 #define BOARD_HEIGHT 20
 
-// ----------------------
-// UART INTERRUPT FIFO
-// ----------------------
-#define UART_FIFO_SIZE 256
-volatile u8 uart_fifo[UART_FIFO_SIZE];
-volatile int uart_head = 0;
-volatile int uart_tail = 0;
+typedef struct {
+    bool no_hold;
+    bool fast_grav;
+    bool messy_garbage;
+    bool no_garbage;
+    bool single_player;
+} GameMods;
 
-static inline int uart_fifo_empty() {
-    return uart_head == uart_tail;
+GameMods mods = {
+    .no_hold = false;
+    .fast_grav = false;
+    .messy_garbage = false;
+    .no_garbage = false;
+    .single_player = false;
 }
-
-static inline void uart_fifo_push(u8 b) {
-    int next = (uart_head + 1) & (UART_FIFO_SIZE - 1);
-    if (next != uart_tail) {   // drop when full (should not happen)
-        uart_fifo[uart_head] = b;
-        uart_head = next;
-    }
-}
-
-static inline int uart_fifo_pop(u8 *b) {
-    if (uart_fifo_empty()) return 0;
-    *b = uart_fifo[uart_tail];
-    uart_tail = (uart_tail + 1) & (UART_FIFO_SIZE - 1);
-    return 1;
-}
-
 
 
 // TETROMINOES[piece][rot][row][col]
@@ -294,6 +282,7 @@ typedef struct{
 	int16_t y; // signed now
 	uint8_t rot; // 0 ,1 ,2,3 clockwise rotations
 	uint8_t lines;
+	uint32_t linestot;
 	uint16_t next_piece_index;
 	uint32_t score;
 	volatile uint32_t* holdaddr;
@@ -311,6 +300,15 @@ XUartLite Uart;
 XGpio P1KeycodeGpio;
 XGpio P2KeycodeGpio;
 XTmrCtr Usb_timer;
+
+
+// -------------------------------------------
+// Non-blocking UART read attempt
+// returns 1 if a byte was read, 0 otherwise
+// -------------------------------------------
+int try_recv_byte(u8 *dst) {
+    return XUartLite_Recv(&Uart, dst, 1);
+}
 
 // -------------------------------------------
 // Process one input packet (player, key, state)
@@ -491,6 +489,12 @@ void handle_left_right(Player* p, u8 key, u8 state) {
     }
 }
 
+// stable gravity table
+static const uint32_t gravity_table[] = {
+    50000000, 45000000, 40000000, 35000000, 30000000,
+    25000000, 20000000, 15000000, 10000000, 5000000
+};
+
 // Returns number of cleared lines
 void clear_lines(Player *p) {
     // Scan from bottom to top
@@ -518,7 +522,7 @@ void clear_lines(Player *p) {
             y++;  // re-check the same y index because rows shifted down
         }
     }
-
+    p->linestot += p->lines;
     return;
 }
 
@@ -588,6 +592,9 @@ void apply_garbage(Player *p, uint8_t amount) {
     int hole = simple_rand(10);
     while (amount--) {
         // shift board up
+        if(mods.messy_garbage){
+            hole = simple_rand(10);
+        }
         for (int y = 0; y < 19; y++) {
             for (int x = 0; x < 10; x++) {
                 p->grid[x][y] = p->grid[x][y + 1];
@@ -613,6 +620,9 @@ void apply_garbage(Player *p, uint8_t amount) {
 }
 
 void handle_hold(Player* p, u8 key, u8 state, u8 prev_state) {
+    if(mods.no_hold){
+        return;
+    }
     if (key != KEY_HOLD) return;
     if (!(prev_state == 0 && state == 1)) return; // rising edge
     if (!p->can_hold) return;                     // only once per piece
@@ -666,18 +676,6 @@ uint8_t garbage_from_lines(uint8_t lines) {
     }
 }
 
-void UartHandler(void *CallBackRef, unsigned int ByteCount)
-{
-    XUartLite *Inst = (XUartLite*)CallBackRef;
-    u8 buf[16];
-
-    int n = XUartLite_Recv(Inst, buf, sizeof(buf));
-    for (int i = 0; i < n; i++) {
-        uart_fifo_push(buf[i]);
-    }
-}
-
-
 #define HOLDNEXT ((volatile uint32_t*) 0x44A00000)
 
 int main() {
@@ -689,8 +687,6 @@ int main() {
 
 
     XUartLite_Initialize(&Uart, UART_DEVICE_ID);
-    XUartLite_SetRecvHandler(&Uart, UartHandler, &Uart);
-    XUartLite_EnableInterrupt(&Uart);
 
     XGpio_Initialize(&P1KeycodeGpio, PLAYER_1_CODE_GPIO_ID);
     XGpio_SetDataDirection(&P1KeycodeGpio, 1, 0);
@@ -698,15 +694,13 @@ int main() {
     XGpio_Initialize(&P2KeycodeGpio, PLAYER_2_CODE_GPIO_ID);
     XGpio_SetDataDirection(&P2KeycodeGpio, 1, 0);
 
-    microblaze_enable_interrupts();
-
 
     // UART packet assembly state
     u8 packet[3];
     int bytes_needed = 3;
     uint32_t base_gravity_ticks = 50000000;
     uint32_t gravity_ticks = 50000000;
-    uint32_t lr_ticks = 10000000; // 50 ms;
+    uint32_t lr_ticks = 7500000; // 50 ms;
     uint32_t tick1;
     uint32_t tick2;
     uint8_t nib1[8];
@@ -716,23 +710,18 @@ int main() {
     int p1_ready = 0;
     int p2_ready = 0;
 
-    // Maintain per-player key + state
-    u8 key1 = 0, key2 = 0;
-    u8 p1Down = 0, p2Down = 0;
-    u8 prev_p1Down = 0, prev_p2Down = 0;
-
     while(1) {
-    	while (uart_fifo_pop(&b)) {
-            packet[3 - bytes_needed] = b;
-            bytes_needed--;
+    	u8 b;
+		if (try_recv_byte(&b)) {
+			packet[3 - bytes_needed] = b;
+			bytes_needed--;
 
-            if (bytes_needed == 0) {
-                process_input_event(packet[0], packet[1], packet[2]);
-                if (packet[0] == 1) { key1 = packet[1]; p1Down = packet[2]; }
-                if (packet[0] == 2) { key2 = packet[1]; p2Down = packet[2]; }
-                bytes_needed = 3;
-            }
-        }
+			if (bytes_needed == 0) {
+				// full packet received
+				process_input_event(packet[0], packet[1], packet[2]);
+				bytes_needed = 3;
+			}
+		}
 	 if (packet[2] == 1 && packet[1] == KEY_ENTER) {
 			 if (packet[0] == 1) {
 				 p1_ready = 1;
@@ -743,6 +732,16 @@ int main() {
 				 tick2 = XTmrCtr_GetValue(&Usb_timer, 0);
 			 }
 		 }
+     //GAME MODS
+    if (packet[2] == 1 && packet[1] == fastGrav);
+    if (packet[2] == 1 && packet[1] == noHold);
+    if (packet[2] == 1 && packet[1] == messyGarbage);
+    if (packet[2] == 1 && packet[1] == noGarbage);
+    if (packet[2] == 1 && packet[1] == singlePlayer);
+
+
+
+
 	 if (p1_ready && p2_ready) {
 		 rng_state = tick1 + tick2;
 		 break;
@@ -761,7 +760,8 @@ int main() {
 		.hold_piece = EMPTY_HOLD,
 		.can_hold = true,
 		.score = 0,
-		.holdaddr = HOLDNEXT
+		.holdaddr = HOLDNEXT,
+		.linestot = 0
     };
 
     Player P2 = {
@@ -775,7 +775,8 @@ int main() {
 		.hold_piece = EMPTY_HOLD,
 		.can_hold = true,
 		.score = 0,
-		.holdaddr = (HOLDNEXT+6)
+		.holdaddr = (HOLDNEXT+6),
+		.linestot = 0
     };
     *(HOLDNEXT) = 0x01234561;
     *(HOLDNEXT+1) = 0x12340000;
@@ -809,19 +810,34 @@ int main() {
     uint32_t last_tick1 = XTmrCtr_GetValue(&Usb_timer, 0);
     uint32_t last_tick2 = XTmrCtr_GetValue(&Usb_timer, 0);
 
+    // Maintain per-player key + state
+    u8 key1 = 0, key2 = 0;
+    u8 p1Down = 0, p2Down = 0;
+    u8 prev_p1Down = 0, prev_p2Down = 0;
+
     while (1) {
 
         //-----------------------------
         // NON-BLOCKING UART INPUT
         //-----------------------------
-        while (uart_fifo_pop(&b)) {
+        u8 b;
+        if (try_recv_byte(&b)) {
             packet[3 - bytes_needed] = b;
             bytes_needed--;
 
             if (bytes_needed == 0) {
+                // full packet received
                 process_input_event(packet[0], packet[1], packet[2]);
-                if (packet[0] == 1) { key1 = packet[1]; p1Down = packet[2]; }
-                if (packet[0] == 2) { key2 = packet[1]; p2Down = packet[2]; }
+
+                if (packet[0] == 1) {
+                    key1      = packet[1];
+                    p1Down    = packet[2];
+                }
+                else if (packet[0] == 2) {
+                    key2      = packet[1];
+                    p2Down    = packet[2];
+                }
+
                 bytes_needed = 3;
             }
         }
@@ -871,18 +887,26 @@ int main() {
 
             uint8_t gsend1 = garbage_from_lines(P1.lines);
             uint8_t gsend2 = garbage_from_lines(P2.lines);
-            if (gsend1 > 0) apply_garbage(&P2, gsend1);
-            if (gsend2 > 0) apply_garbage(&P1, gsend2);
+            
+            if(!mods.no_garbage && !mods.no_garbage){
+                if (gsend1 > 0) apply_garbage(&P2, gsend1);
+                if (gsend2 > 0) apply_garbage(&P1, gsend2);
+            }
+            
 
             P1.score += line_score(P1.lines);
             P2.score += line_score(P2.lines);
 
             // Update gravity speed based on cumulative lines
-            uint8_t total_lines = P1.lines + P2.lines; // or maintain a total_lines_cleared variable
+            uint8_t total_lines = P1.linestot + P2.linestot; // or maintain a total_lines_cleared variable
             gravity_ticks = base_gravity_ticks;
-            uint8_t speed_level = total_lines / 10;
-            for(int i=0; i<speed_level; i++) gravity_ticks = gravity_ticks * 9 / 10;
-            if(gravity_ticks < 5000000) gravity_ticks = 5000000;
+            uint8_t level = total_lines / 10;   // advance every 10 lines
+            if (level > 9) level = 9;
+            gravity_ticks = gravity_table[level];
+
+            if(mods.fast_grav){
+                gravity_ticks = gravity_table[level] - 10000000;
+            }
 
             P1.lines = 0;
             P2.lines = 0;
@@ -895,7 +919,8 @@ int main() {
         // RENDER
         //-----------------------------
         writeboard(&P1);
-        writeboard(&P2);
+        if(!mods.single_player)
+            writeboard(&P2);
 
         nib1[0] = P1.hold_piece;
         nib1[1] = P1.next_pieces[0];
